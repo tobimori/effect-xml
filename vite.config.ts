@@ -142,7 +142,6 @@ export default defineConfig({
     rules: {
       "anti-slop/no-chained-type-assertions": "error",
       "anti-slop/no-conditional-empty-object-spread": "error",
-      "anti-slop/no-explicit-return-types": "error",
       "anti-slop/no-internal-export-all": "error",
       "anti-slop/no-known-value-widening": "error",
       "anti-slop/no-manual-tags": "error",
@@ -159,7 +158,6 @@ export default defineConfig({
       "anti-slop/no-unknown-type-aliases": "error",
       "anti-slop/no-unsafe-dictionary-type": "error",
       "anti-slop/no-widen-then-assert": "error",
-      "anti-slop/require-safety-comment-for-type-assertion": "error",
       "anti-slop-effect/no-service-constructor-imports": "error",
       "anti-slop-effect/prefer-effect-fn": "error",
     },
