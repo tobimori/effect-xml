@@ -517,7 +517,9 @@ export const Struct = <const Fields extends Readonly<Record<PropertyKey, StructF
                   for (let index = 0; index < content.attributes.length; index++) {
                     if (!attributes.has(index)) {
                       const attribute = content.attributes[index]!;
-                      output[Symbol(`XML attribute ${attribute.name.qualifiedName}`)] = attribute;
+                      const key = Symbol(`XML attribute ${attribute.name.qualifiedName}`);
+                      output[key] = attribute;
+                      projected.set(key, attribute);
                     }
                   }
                   for (let index = 0; index < contentChildren.length; index++) {
@@ -527,7 +529,9 @@ export const Struct = <const Fields extends Readonly<Record<PropertyKey, StructF
                     let description = "XML content";
                     if (isElement(child)) description = child.name.qualifiedName;
                     else if (isText(child)) description = "Text";
-                    output[Symbol(`XML child ${description} ${index}`)] = child;
+                    const key = Symbol(`XML child ${description} ${index}`);
+                    output[key] = child;
+                    projected.set(key, child);
                   }
                 }
 

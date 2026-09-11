@@ -1,0 +1,13 @@
+{
+  "release": "20130923",
+  "homepage": "https://www.w3.org/XML/Test/",
+  "archive": "https://www.w3.org/XML/Test/xmlts20130923.tar.gz",
+  "archiveSha256": "9b61db9f5dbffa545f4b8d78422167083a8568c59bd1129f94138f936cf6fc1f",
+  "taildropArchiveSha256": "00228180a3dff2c30156507918c0e0559a2a86c2fb080ab52bbd3f9d024b1dd1",
+  "verification": "The supplied xmlconf.7z and the official archive contain identical file paths and bytes.",
+  "files": 3386,
+  "catalogCases": 2585,
+  "modifications": "None in xmlconf/. Catalog path corrections and profile exclusions are applied by the harness, not to the W3C files.",
+  "licenseSource": "https://www.w3.org/Consortium/Legal/copyright-software-19980720",
+  "contributionTerms": "https://www.w3.org/XML/Test/XMLConformanceTS-Process-20031210.html#ownership"
+}
