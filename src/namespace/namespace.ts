@@ -52,7 +52,6 @@ export interface Namespace {
 }
 
 /** Creates Element and Attribute constructors with one namespace and prefix preference. */
-// RETURN TYPE: Retains the factory's overloaded codec constructors.
 export const Namespace = (
   namespaceUri: string,
   options: { readonly prefix?: string } = {},

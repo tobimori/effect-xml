@@ -52,7 +52,6 @@ const validateOptions = (
 };
 
 /** Maps one typed XML child or child sequence to declaration-free XML text. */
-// RETURN TYPE: Preserves both content service sets while fixing the encoded side to string.
 export const Fragment = <S extends FragmentContent>(
   content: S,
   options: FragmentOptions = {},
@@ -71,12 +70,10 @@ export const Fragment = <S extends FragmentContent>(
           Effect.flatMap(CurrentDecodeState, (state) => {
             if (placement.kind === "array") {
               if (state !== undefined) state.root = fragment.children;
-              // SAFETY: Retained array placement proves that the content expects element children.
               return Effect.succeed(fragment.children as S["Encoded"]);
             }
             if (fragment.children.length === 0 && optional) {
               if (state !== undefined) state.root = fragment;
-              // SAFETY: Encoded optionality proves that undefined is accepted at this boundary.
               return Effect.succeed(undefined as S["Encoded"]);
             }
             if (fragment.children.length !== 1) {
@@ -87,7 +84,6 @@ export const Fragment = <S extends FragmentContent>(
             }
             const child = fragment.children[0]!;
             if (state !== undefined) state.root = child;
-            // SAFETY: Retained element placement proves that the content expects one element child.
             return Effect.succeed(child as S["Encoded"]);
           }),
         encode: (encoded, parseOptions) => {

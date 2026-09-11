@@ -142,7 +142,6 @@ const nilledContentIssues = (
   });
 
 /** Adds explicit xsi:nil null semantics to an XML element codec. */
-// RETURN TYPE: Preserves the wrapped element's decode and encode service requirements.
 export const Nil = <S extends Encodes<ElementNode>>(
   element: S,
 ): Schema.Codec<S["Type"] | null, ElementNode, S["DecodingServices"], S["EncodingServices"]> => {

@@ -315,7 +315,6 @@ class Cursor {
     return this.index !== start;
   }
 
-  // RETURN TYPE: Call sites rely on this method for control-flow narrowing.
   fail(detail: string, location = this.mark()): never {
     throw new ParseFailure({ detail, location });
   }

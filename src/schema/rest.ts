@@ -29,7 +29,6 @@ export interface Rest {
 }
 
 /** Materializes the full effective context only when actual Rest data is decoded. */
-// RETURN TYPE: Exposes the validated context rather than the mutable materialization details.
 export const snapshotRestNamespaces = (scope: XmlNamespaceScope): NamespaceContext => {
   const frames: Array<XmlNamespaceScope> = [];
   const seen = new Set<XmlNamespaceScope>();
@@ -170,7 +169,6 @@ const validateRest = (input: unknown, ast: SchemaAST.AST, options: SchemaAST.Par
         if (namespaceIssue !== undefined) {
           return Effect.fail(restIssue(namespaceIssue, input, options));
         }
-        // SAFETY: Original class recognition plus full field decoding proved this exact value.
         return Effect.succeed(input as Rest);
       });
     }),
@@ -184,7 +182,6 @@ const restDeclaration = Schema.declareConstructor<Rest>()(
 );
 
 /** Refines a value through the complete Rest field schemas without throwing. */
-// RETURN TYPE: Exposes control-flow narrowing at the public Rest schema boundary.
 export const isRest = (
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Rest is a public schema boundary.
   input: unknown,

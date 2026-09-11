@@ -81,7 +81,6 @@ const optionalBareArrayIssue = <Input>(
   );
 
 /** Maps unordered attributes and known child elements through a standard Effect Struct. */
-// RETURN TYPE: Exposes the standard Struct type and service inference over ElementContent.
 export const Struct = <const Fields extends Readonly<Record<PropertyKey, StructField>>>(
   fields: Fields,
 ): Schema.Codec<
@@ -130,7 +129,6 @@ export const Struct = <const Fields extends Readonly<Record<PropertyKey, StructF
       direct.name.localName === undefined
         ? Schema.middlewareEncoding(provideName)(Schema.middlewareDecoding(provideName)(field))
         : field;
-    // SAFETY: Decoding and encoding middleware preserve the field's encoded XML category.
     boundFields[key] = boundField as StructField;
     specs.push({ key, placement, name, optional: encodedOptional(field) });
   }
@@ -271,8 +269,7 @@ export const Struct = <const Fields extends Readonly<Record<PropertyKey, StructF
               if (state !== undefined && content.element !== undefined) {
                 state.projections.set(content.element, projected);
               }
-              // SAFETY: Declared keys have their retained placement category; extra child values
-              // are intentional unknown properties consumed by ordinary Struct excess handling.
+              // Extra child values are intentional unknown properties for Struct excess handling
               return Effect.succeed(output as Schema.Struct.Encoded<typeof boundFields>);
             }),
           );
@@ -292,13 +289,11 @@ export const Struct = <const Fields extends Readonly<Record<PropertyKey, StructF
             const attributes: Array<{ readonly key: PropertyKey; readonly value: Attribute }> = [];
             const children: Array<Element> = [];
             const issues: Array<SchemaIssue.Issue> = [];
-            // SAFETY: This mapped view is the field-addressable form of Struct.Encoded<Fields>.
             const encodedValues = values as {
               readonly [Key in keyof Fields]?: Fields[Key]["Encoded"];
             };
 
             for (const spec of specs) {
-              // SAFETY: Specs are created only from Reflect.ownKeys(fields) above.
               const value = encodedValues[spec.key as keyof Fields];
               if (value === undefined) {
                 if (!spec.optional) {
@@ -405,7 +400,6 @@ export const Struct = <const Fields extends Readonly<Record<PropertyKey, StructF
     });
   };
 
-  // SAFETY: The bound field view changes only lexical context, not the public Struct shape.
   return codec.pipe(Schema.middlewareDecoding(withStructuralIssues)) as Schema.Codec<
     Schema.Struct.Type<Fields>,
     ElementContent,

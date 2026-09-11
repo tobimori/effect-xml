@@ -30,10 +30,7 @@ export interface EncodedElement {
   readonly span?: Schema.Codec.Encoded<typeof SourceSpan>;
 }
 
-const RecursiveChild = lazy(
-  // RETURN TYPE: Closes the recursive schema while retaining its encoded form
-  (): Schema.Codec<Child, EncodedChild> => ChildNode,
-);
+const RecursiveChild = lazy((): Schema.Codec<Child, EncodedChild> => ChildNode);
 
 /** A namespace-resolved XML element with ordered attributes and children. */
 export class Element extends Schema.TaggedClass<Element>("effect-xml/XmlNode/Element")("Element", {

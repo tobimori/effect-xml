@@ -15,7 +15,6 @@ export const failIssues = <Input>(
     : Effect.fail(
         new SchemaIssue.Composite(
           ast,
-          // SAFETY: This branch is reached only when selected contains at least two issues.
           selected as readonly [SchemaIssue.Issue, ...Array<SchemaIssue.Issue>],
           input,
           options,

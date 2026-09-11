@@ -27,7 +27,6 @@ interface MutableAstNameFields {
 }
 
 /** Copies a public name input over optional private namespace defaults. */
-// RETURN TYPE: Hides the mutable construction object behind readonly placement metadata.
 export const codecNameFrom = (
   input: string | Name | undefined,
   defaults: CodecName = {},
@@ -41,7 +40,6 @@ export const codecNameFrom = (
 };
 
 /** Supplies a field-key local name without changing retained namespace preferences. */
-// RETURN TYPE: Establishes the required local-name member for expanded-name consumers.
 export const withLocalName = (name: CodecName, localName: string): ResolvedCodecName => ({
   ...name,
   localName: name.localName ?? localName,

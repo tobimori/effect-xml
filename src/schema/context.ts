@@ -69,13 +69,11 @@ export interface DecodeState {
 }
 
 /** Starts a linked scope chain from a fragment's validated inherited bindings. */
-// RETURN TYPE: Keeps the root frame behind the readonly linked-scope contract.
 export const rootXmlNamespaceScope = (inherited?: NamespaceContext): XmlNamespaceScope => ({
   bindings: inherited?.bindings ?? [],
 });
 
 /** Adds one element declaration delta without materializing inherited bindings. */
-// RETURN TYPE: Keeps each declaration frame behind the readonly linked-scope contract.
 export const enterXmlNamespaceScope = (
   parent: XmlNamespaceScope,
   element: Element,
@@ -118,7 +116,6 @@ export const registerXmlNamespaceScope = (
 export const xmlNamespaceScopeFor = (state: DecodeState | undefined, element: Element) =>
   state?.namespaceScopes?.get(element);
 
-// RETURN TYPE: Narrows the provenance cursor's readonly-array union member.
 const isNodeArray = (value: Node | ReadonlyArray<Node>): value is ReadonlyArray<Node> =>
   globalThis.Array.isArray(value);
 

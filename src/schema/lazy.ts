@@ -10,7 +10,6 @@ export type Lazy<S extends Schema.Constraint> = Schema.declareConstructor<
 >;
 
 /** Defers recursive schema execution without changing its types or services. */
-// RETURN TYPE: Exposes the single suspended parameter that preserves service sets
 export const lazy = <S extends Schema.Constraint>(thunk: () => S): Lazy<S> =>
   Schema.declareConstructor<S["Type"], S["Encoded"]>()([Schema.suspend(thunk)], ([codec]) => {
     const decode = SchemaParser.decodeUnknownEffect(codec);

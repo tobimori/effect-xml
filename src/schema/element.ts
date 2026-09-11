@@ -81,7 +81,6 @@ const describeChild = (child: Child) => {
   return isComment(child) ? "XML comment" : "XML processing instruction";
 };
 
-// RETURN TYPE: Fixes the encoded category while preserving target services.
 const makeElementCodec = <S extends Schema.Constraint>(
   explicitName: CodecName,
   target: S,
@@ -169,7 +168,6 @@ export function Element<S extends Schema.Constraint>(
   name: string | Name,
   content: S,
 ): Schema.Codec<S["Type"], ElementNode, S["DecodingServices"], S["EncodingServices"]>;
-// RETURN TYPE: The overload implementation preserves the supplied content service sets.
 export function Element<S extends Schema.Constraint>(
   nameOrContent: string | Name | S,
   maybeContent?: S,
@@ -178,7 +176,6 @@ export function Element<S extends Schema.Constraint>(
 }
 
 /** @internal Builds a namespace-factory element without changing the public constructor. */
-// RETURN TYPE: Preserves the supplied content schema's services through the private defaults.
 export const elementWithNameDefaults = <S extends Schema.Constraint>(
   defaults: CodecName,
   nameOrContent: string | S,
@@ -186,7 +183,6 @@ export const elementWithNameDefaults = <S extends Schema.Constraint>(
 ): Schema.Codec<S["Type"], ElementNode, S["DecodingServices"], S["EncodingServices"]> =>
   makeElement(defaults, nameOrContent, maybeContent);
 
-// RETURN TYPE: The helper preserves the selected content schema's service sets.
 const makeElement = <S extends Schema.Constraint>(
   defaults: CodecName,
   nameOrContent: string | Name | S,
@@ -203,7 +199,6 @@ const makeElement = <S extends Schema.Constraint>(
       content,
       true,
       (element) => {
-        // SAFETY: The retained struct placement proves that S encodes ElementContent.
         return Effect.succeed({
           element,
           attributes: element.attributes,
@@ -211,7 +206,6 @@ const makeElement = <S extends Schema.Constraint>(
         } as S["Encoded"] & ElementContent);
       },
       (value) => {
-        // SAFETY: The retained struct placement proves that S encodes ElementContent.
         const fields = value as S["Encoded"] & ElementContent;
         return Effect.succeed({ attributes: fields.attributes, children: fields.children });
       },
@@ -258,11 +252,9 @@ const makeElement = <S extends Schema.Constraint>(
             state.projections.set(element, projected);
           }
           if (issues.length > 0) return failIssues(ast, issues, element, options);
-          // SAFETY: The retained array placement proves that S encodes an Element array.
           return Effect.succeed(elements as S["Encoded"]);
         }),
       (value) => {
-        // SAFETY: The retained array placement proves that S encodes an Element array.
         const children = value as ReadonlyArray<ElementNode>;
         return Effect.succeed({ attributes: [], children });
       },

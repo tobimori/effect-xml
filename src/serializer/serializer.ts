@@ -894,7 +894,6 @@ const writeNodes = (options: WriteNodesOptions) => {
 };
 
 /** Serializes a fully validated XML document without recursive tree traversal. */
-// RETURN TYPE: Keeps the serializer contract's public Effect issue channel stable
 export const serializeDocument = (
   document: Document,
   options?: SerializeOptions,
@@ -927,7 +926,6 @@ export const serializeDocument = (
 };
 
 /** Serializes ordered XML content without adding a declaration, DTD, or wrapper node. */
-// RETURN TYPE: Keeps the serializer contract's public Effect issue channel stable
 export const serializeFragment = (
   fragment: AstFragment,
   options?: FragmentSerializeOptions,

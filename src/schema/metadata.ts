@@ -44,7 +44,6 @@ export type FragmentContent = Encodes<Child | ReadonlyArray<Child> | undefined>;
 export type DocumentRoot = Encodes<Element>;
 
 /** Adds XML placement to the final encoded AST of a declaration. */
-// RETURN TYPE: Keeps the encoded category visible to generic constructor signatures.
 export const encoded = <A>(
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- This is the Schema.declare parsing boundary.
   is: (input: unknown) => input is A,
@@ -55,7 +54,6 @@ export const encoded = <A>(
 export const encodedString = (placement: Placement) =>
   Schema.String.annotate({ [PlacementAnnotation]: placement });
 
-// RETURN TYPE: Narrows untyped public AST annotations to this library's placement union.
 const annotationPlacement = (ast: SchemaAST.AST): Placement | undefined => {
   const value = ast.annotations?.[PlacementAnnotation];
   if (!Predicate.isObject(value) || !Predicate.hasProperty(value, "kind")) return undefined;
@@ -68,16 +66,13 @@ const annotationPlacement = (ast: SchemaAST.AST): Placement | undefined => {
   ) {
     return undefined;
   }
-  // SAFETY: Placement annotations are created only by encoded above; the discriminant was checked.
   return value as Placement;
 };
 
 /** Resolves XML placement through public encoded AST links. */
-// RETURN TYPE: Callers branch on absence when incompatible Effect operations removed placement.
 export const getPlacement = (schema: Schema.Constraint): Placement | undefined => {
   const seen = new Set<SchemaAST.AST>();
 
-  // RETURN TYPE: Recursive AST traversal has an explicit optional placement result.
   const visit = (ast: SchemaAST.AST): Placement | undefined => {
     if (seen.has(ast)) return undefined;
     seen.add(ast);
@@ -104,7 +99,6 @@ export const getPlacement = (schema: Schema.Constraint): Placement | undefined =
 export const acceptsEncodedUndefined = (schema: Schema.Constraint) => {
   const seen = new Set<SchemaAST.AST>();
 
-  // RETURN TYPE: Closes recursive traversal while preserving the boolean predicate result.
   const visit = (ast: SchemaAST.AST): boolean => {
     if (seen.has(ast)) return false;
     seen.add(ast);
@@ -121,7 +115,6 @@ export const acceptsEncodedUndefined = (schema: Schema.Constraint) => {
   return visit(schema.ast);
 };
 
-// RETURN TYPE: Schema.declare consumes this predicate as the ElementContent recognition boundary.
 export const isElementContent = (
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- This is the Schema.declare parsing boundary.
   input: unknown,

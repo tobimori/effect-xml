@@ -15,7 +15,6 @@ const matchesName = (actual: ExpandedName, expected: NameInput) =>
     : equalsName(actual, expected);
 
 /** Finds the first attribute with the requested expanded name. */
-// RETURN TYPE: Keeps absence explicit in the public navigation contract.
 export const getAttribute = (element: Element, name: NameInput): Option.Option<Attribute> => {
   for (const attribute of element.attributes) {
     if (matchesName(attribute.name, name)) return Option.some(attribute);
@@ -24,7 +23,6 @@ export const getAttribute = (element: Element, name: NameInput): Option.Option<A
 };
 
 /** Returns direct element children, optionally filtered by expanded name. */
-// RETURN TYPE: Exposes immutable results even though the implementation builds a fresh array.
 export const getChildren = (element: Element, name?: NameInput): ReadonlyArray<Element> => {
   const children: Array<Element> = [];
   for (const child of element.children) {

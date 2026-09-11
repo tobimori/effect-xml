@@ -9,7 +9,6 @@ interface Visit {
   readonly exiting: boolean;
 }
 
-// RETURN TYPE: Narrows unvalidated encoded elements without requiring XML AST class identity.
 // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Cycle preflight intentionally inspects unknown encoded nodes.
 const elementCandidate = (value: unknown): value is ElementCandidate => {
   try {

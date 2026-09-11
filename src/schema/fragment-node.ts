@@ -14,7 +14,6 @@ export interface FragmentNodeOptions extends FragmentParseOptions {
   readonly indent?: string;
 }
 
-// RETURN TYPE: Narrows the raw and typed stages to the same public string boundary.
 const makeFragmentNode = (
   options: FragmentNodeOptions,
   shareCurrentState: boolean,
@@ -59,7 +58,6 @@ const makeFragmentNode = (
 };
 
 /** A low-level string codec for declaration-free XML fragment AST values. */
-// RETURN TYPE: Exposes the low-level codec's public Fragment/string boundary.
 export const FragmentNode = (
   options: FragmentNodeOptions = {},
 ): Schema.Codec<AstFragment, string> => makeFragmentNode(options, false);

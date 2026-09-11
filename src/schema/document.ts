@@ -93,7 +93,6 @@ const documentVersion = (options: DocumentOptions) => {
 };
 
 /** Maps one typed root element to a complete XML document string. */
-// RETURN TYPE: Preserves both service sets while fixing the public encoded side to string.
 export const Document = <S extends DocumentRoot>(
   root: S,
   options: DocumentOptions = {},

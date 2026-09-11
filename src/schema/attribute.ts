@@ -32,7 +32,6 @@ export function Attribute<S extends Schema.Constraint>(
   name: string | Name,
   schema: S,
 ): Schema.Codec<S["Type"], AttributeNode, S["DecodingServices"], S["EncodingServices"]>;
-// RETURN TYPE: The overload implementation preserves the supplied schema's service sets.
 export function Attribute<S extends Schema.Constraint>(
   nameOrSchema: string | Name | S,
   maybeSchema?: S,
@@ -41,7 +40,6 @@ export function Attribute<S extends Schema.Constraint>(
 }
 
 /** @internal Builds a namespace-factory attribute without changing the public constructor. */
-// RETURN TYPE: Preserves the supplied schema's service sets through the private defaults.
 export const attributeWithNameDefaults = <S extends Schema.Constraint>(
   defaults: CodecName,
   nameOrSchema: string | S,
@@ -49,7 +47,6 @@ export const attributeWithNameDefaults = <S extends Schema.Constraint>(
 ): Schema.Codec<S["Type"], AttributeNode, S["DecodingServices"], S["EncodingServices"]> =>
   makeAttribute(defaults, nameOrSchema, maybeSchema);
 
-// RETURN TYPE: The helper preserves the selected scalar schema's service sets.
 const makeAttribute = <S extends Schema.Constraint>(
   defaults: CodecName,
   nameOrSchema: string | Name | S,

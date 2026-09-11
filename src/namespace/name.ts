@@ -58,7 +58,6 @@ const NameFields = Schema.Struct({
 const isNameFields = Schema.is(NameFields);
 
 /** Constructs a validated typed-codec name descriptor. */
-// RETURN TYPE: Hides the module-private unique-symbol identity behind the public Name interface.
 export const Name = (
   localName: string,
   options?: { readonly namespaceUri?: string; readonly prefix?: string },
@@ -69,7 +68,6 @@ export const Name = (
 };
 
 /** Refines a value through the private typed-name identity and field validation. */
-// RETURN TYPE: Exposes control-flow narrowing to the opaque public Name interface.
 export const isName = (
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- This guard is the Name recognition boundary.
   input: unknown,

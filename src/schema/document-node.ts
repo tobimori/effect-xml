@@ -17,7 +17,6 @@ export interface DocumentNodeOptions extends ParseOptions {
 
 export const withDocumentDecodeState = withXmlDecodeState;
 
-// RETURN TYPE: Keeps the private state-sharing variant at the same public string boundary.
 const makeDocumentNode = (
   options: DocumentNodeOptions,
   shareCurrentState: boolean,
@@ -63,7 +62,6 @@ const makeDocumentNode = (
 };
 
 /** A low-level string codec for complete XML document AST values. */
-// RETURN TYPE: Exposes the low-level codec's public Document/string boundary.
 export const DocumentNode = (
   options: DocumentNodeOptions = {},
 ): Schema.Codec<AstDocument, string> => makeDocumentNode(options, false);

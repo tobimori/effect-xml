@@ -37,7 +37,6 @@ export const validateXmlCharacters = (
   });
 
 /** Derives the canonical Effect string-leaf codec used by XML scalar content. */
-// RETURN TYPE: Narrows StringTree to the required string leaf while retaining service sets.
 export const scalar = <S extends Schema.Constraint>(
   schema: S,
 ): Schema.Codec<S["Type"], string, S["DecodingServices"], S["EncodingServices"]> => {

@@ -5,7 +5,6 @@ import { Element, isElement } from "../ast/element.ts";
 import { encoded, getPlacement, type ArrayItem } from "./metadata.ts";
 
 /** Repeats an element codec while retaining encounter order. */
-// RETURN TYPE: Keeps readonly array type and both item service sets in the public signature.
 export const Array = <S extends ArrayItem>(
   item: S,
 ): Schema.Codec<
