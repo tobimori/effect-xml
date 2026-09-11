@@ -19,6 +19,8 @@
   "sideEffects": false,
   "exports": {
     ".": "./dist/index.js",
+    "./Xml": "./dist/xml.js",
+    "./XmlNode": "./dist/xml-node.js",
     "./package.json": "./package.json"
   },
   "publishConfig": {

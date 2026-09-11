@@ -1,6 +1,2 @@
-/**
- * Effect Schema codecs for XML.
- *
- * @since 0.0.0
- */
-export {};
+export * as Xml from "./xml.ts";
+export * as XmlNode from "./xml-node.ts";
