@@ -36,13 +36,8 @@ interface FieldSpec {
   readonly optional: boolean;
 }
 
-const encodedOptional = (field: StructField) => {
-  // SAFETY: Effect AST nodes expose optionality through their public context value.
-  const ast = SchemaAST.toEncoded(field.ast) as SchemaAST.AST & {
-    readonly context?: { readonly isOptional?: boolean };
-  };
-  return ast.context?.isOptional === true;
-};
+const encodedOptional = (field: StructField) =>
+  SchemaAST.isOptional(SchemaAST.toEncoded(field.ast));
 
 const sameUnnamespacedName = (element: Attribute | Element, name: string) =>
   element.name.localName === name && element.name.namespaceUri === undefined;
@@ -58,6 +53,23 @@ const duplicateIssue = (
     [key],
     new SchemaIssue.InvalidValue(
       { message: `Duplicate known XML ${kind} ${JSON.stringify(name)}` },
+      input,
+      options,
+    ),
+  );
+
+const optionalBareArrayIssue = <Input>(
+  key: PropertyKey,
+  input: Input,
+  options: SchemaAST.ParseOptions,
+) =>
+  new SchemaIssue.Pointer(
+    [key],
+    new SchemaIssue.InvalidValue(
+      {
+        message:
+          "An optional bare Xml.Array placement is ambiguous; use a required Xml.Array for zero-or-more, or an optional Xml.Element(Xml.Array(...)) wrapper when absence and an empty array must remain distinct",
+      },
       input,
       options,
     ),
@@ -116,14 +128,27 @@ export const Struct = <const Fields extends Readonly<Record<PropertyKey, StructF
     specs.push({ key, placement, name, optional: encodedOptional(field) });
   }
 
+  const optionalBareArraySpecs = specs.filter(
+    (spec) => spec.optional && spec.placement.kind === "array",
+  );
   const fieldSchema = Schema.Struct(boundFields);
   const raw = encoded(isElementContent, { kind: "struct" });
   const codec = raw.pipe(
     Schema.decodeTo(
       fieldSchema,
       SchemaTransformation.transformEffect({
-        decode: (content, options) =>
-          Effect.flatMap(CurrentDecodeState, (state) =>
+        decode: (content, options) => {
+          if (optionalBareArraySpecs.length > 0) {
+            return failIssues(
+              fieldSchema.ast,
+              optionalBareArraySpecs.map((spec) =>
+                optionalBareArrayIssue(spec.key, content, options),
+              ),
+              content,
+              options,
+            );
+          }
+          return Effect.flatMap(CurrentDecodeState, (state) =>
             Effect.flatMap(CurrentStructDecodeIssues, (scope) => {
               const output: Record<
                 PropertyKey,
@@ -243,9 +268,20 @@ export const Struct = <const Fields extends Readonly<Record<PropertyKey, StructF
               // are intentional unknown properties consumed by ordinary Struct excess handling.
               return Effect.succeed(output as Schema.Struct.Encoded<typeof boundFields>);
             }),
-          ),
-        encode: (values, options) =>
-          Effect.flatMap(CurrentEncodeState, (state) => {
+          );
+        },
+        encode: (values, options) => {
+          if (optionalBareArraySpecs.length > 0) {
+            return failIssues(
+              fieldSchema.ast,
+              optionalBareArraySpecs.map((spec) =>
+                optionalBareArrayIssue(spec.key, values, options),
+              ),
+              values,
+              options,
+            );
+          }
+          return Effect.flatMap(CurrentEncodeState, (state) => {
             const attributes: Array<{ readonly key: PropertyKey; readonly value: Attribute }> = [];
             const children: Array<Element> = [];
             const issues: Array<SchemaIssue.Issue> = [];
@@ -330,7 +366,8 @@ export const Struct = <const Fields extends Readonly<Record<PropertyKey, StructF
               attributes: attributes.map(({ value }) => value),
               children,
             });
-          }),
+          });
+        },
       }),
     ),
   );
