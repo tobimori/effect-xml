@@ -40,6 +40,7 @@ export interface ElementContent {
 export type Encodes<A> = Schema.Constraint & { readonly Encoded: A };
 export type StructField = Encodes<Attribute | Element | ReadonlyArray<Element> | undefined>;
 export type ArrayItem = Encodes<Element>;
+export type FragmentContent = Encodes<Child | ReadonlyArray<Child> | undefined>;
 export type DocumentRoot = Encodes<Element>;
 
 /** Adds XML placement to the final encoded AST of a declaration. */
@@ -94,6 +95,27 @@ export const getPlacement = (schema: Schema.Constraint): Placement | undefined =
       return members.length === 1 ? visit(members[0]!) : undefined;
     }
     return undefined;
+  };
+
+  return visit(schema.ast);
+};
+
+/** Reports whether the final encoded boundary accepts a standalone undefined value. */
+export const acceptsEncodedUndefined = (schema: Schema.Constraint) => {
+  const seen = new Set<SchemaAST.AST>();
+
+  // RETURN TYPE: Closes recursive traversal while preserving the boolean predicate result.
+  const visit = (ast: SchemaAST.AST): boolean => {
+    if (seen.has(ast)) return false;
+    seen.add(ast);
+
+    const encodedAst = SchemaAST.toEncoded(ast);
+    if (SchemaAST.isUndefined(encodedAst)) return true;
+    if (SchemaAST.isSuspend(encodedAst)) return visit(encodedAst.thunk());
+    if (SchemaAST.isDeclaration(encodedAst) && encodedAst.typeParameters.length === 1) {
+      return visit(encodedAst.typeParameters[0]!);
+    }
+    return SchemaAST.isUnion(encodedAst) && encodedAst.types.some(visit);
   };
 
   return visit(schema.ast);

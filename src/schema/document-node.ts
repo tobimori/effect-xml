@@ -3,78 +3,19 @@ import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
-import type * as SchemaIssue from "effect/SchemaIssue";
 
 import { Document as AstDocument } from "../ast/document.ts";
-import { isElement, type Element } from "../ast/element.ts";
 import { parseDocument, type ParseOptions } from "../parser/parser.ts";
 import { serializeDocument, type SerializeOptions } from "../serializer/serializer.ts";
-import { CurrentDecodeState, CurrentEncodeState, type DecodeState } from "./context.ts";
+import { CurrentDecodeState, CurrentEncodeState, withXmlDecodeState } from "./context.ts";
 import { encodedString } from "./metadata.ts";
-import { associateSource, type XmlLocation } from "./provenance.ts";
 
 export interface DocumentNodeOptions extends ParseOptions {
   readonly pretty?: boolean;
   readonly indent?: string;
 }
 
-// RETURN TYPE: Narrows the provenance cursor's readonly-array union member.
-const isElementArray = (
-  value: Element | Element["attributes"][number] | ReadonlyArray<Element>,
-): value is ReadonlyArray<Element> => globalThis.Array.isArray(value);
-
-// RETURN TYPE: Source lookup explicitly models paths without a corresponding parsed node.
-const locationAt = (
-  state: DecodeState,
-  path: ReadonlyArray<PropertyKey>,
-): XmlLocation | undefined => {
-  let current: Element | Element["attributes"][number] | ReadonlyArray<Element> | undefined =
-    state.root;
-
-  for (const key of path) {
-    if (current === undefined) break;
-    if (isElementArray(current)) {
-      current = Predicate.isNumber(key) ? current[key] : undefined;
-      continue;
-    }
-    if (!isElement(current)) break;
-    const next: import("./context.ts").ProjectedNode | undefined = state.projections
-      .get(current)
-      ?.get(key);
-    if (next === undefined) break;
-    current = next;
-  }
-
-  if (current === undefined || isElementArray(current)) {
-    return state.root === undefined ? undefined : state.positions.get(state.root);
-  }
-  return (
-    state.positions.get(current) ??
-    (state.root === undefined ? undefined : state.positions.get(state.root))
-  );
-};
-
-export const withDocumentDecodeState = <A, R>(
-  effect: Effect.Effect<A, SchemaIssue.Issue, R>,
-  isolated = false,
-) =>
-  Effect.flatMap(CurrentDecodeState, (current) => {
-    if (!isolated && current !== undefined) return effect;
-    const state: DecodeState = {
-      positions: new WeakMap(),
-      projections: new WeakMap(),
-      preservesSpace: new WeakMap(),
-    };
-    return Effect.provideService(
-      Effect.mapError(effect, (issue) =>
-        associateSource(issue, {
-          location: (path) => locationAt(state, path),
-        }),
-      ),
-      CurrentDecodeState,
-      state,
-    );
-  });
+export const withDocumentDecodeState = withXmlDecodeState;
 
 // RETURN TYPE: Keeps the private state-sharing variant at the same public string boundary.
 const makeDocumentNode = (
@@ -93,22 +34,19 @@ const makeDocumentNode = (
             if (state !== undefined) {
               state.positions = parsed.success.positions;
               state.root = parsed.success.document.root;
+              state.sourceRoot = parsed.success.document.root;
             }
             return Effect.succeed(parsed.success.document);
           }),
         encode: (document) =>
           Effect.flatMap(CurrentEncodeState, (state) => {
-            let serializerOptions: SerializeOptions = shareCurrentState
-              ? {
-                  structured: state?.structured ?? new WeakSet(),
-                  typed: state?.typed ?? new WeakSet(),
-                }
-              : {};
-            if (options.pretty !== undefined) {
-              serializerOptions = { ...serializerOptions, pretty: options.pretty };
-            }
-            if (options.indent !== undefined) {
-              serializerOptions = { ...serializerOptions, indent: options.indent };
+            let serializerOptions: SerializeOptions = options;
+            if (shareCurrentState && Predicate.isObject(options)) {
+              serializerOptions = {
+                ...options,
+                structured: state?.structured ?? new WeakSet(),
+                typed: state?.typed ?? new WeakSet(),
+              };
             }
             const serialized = serializeDocument(document, serializerOptions);
             return Result.isFailure(serialized)
