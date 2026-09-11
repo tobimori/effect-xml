@@ -2,22 +2,32 @@ import * as Data from "effect/Data";
 import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as SchemaIssue from "effect/SchemaIssue";
+import * as SchemaParser from "effect/SchemaParser";
 
 import { Attribute } from "../ast/attribute.ts";
 import { Comment } from "../ast/comment.ts";
 import { Declaration } from "../ast/declaration.ts";
 import { Document, type Misc } from "../ast/document.ts";
 import { Element, type Child } from "../ast/element.ts";
+import { Fragment } from "../ast/fragment.ts";
 import type { SourceSpan } from "../ast/location.ts";
 import { Name } from "../ast/name.ts";
 import { NamespaceDeclaration } from "../ast/namespace-declaration.ts";
 import type { Node } from "../ast/node.ts";
 import { ProcessingInstruction } from "../ast/processing-instruction.ts";
 import { CData, Text } from "../ast/text.ts";
+import { NamespaceContext } from "../namespace/context.ts";
 import { validateBinding, xmlNamespace } from "../namespace/validation.ts";
 import type { XmlLocation } from "../schema/provenance.ts";
-import { isNcName, isXml10Char, isXml10NameChar, isXml10NameStart } from "./character.ts";
-import type { ParseOptions, ParserLimits } from "./types.ts";
+import {
+  isNcName,
+  isXml10NameChar,
+  isXml10NameStart,
+  isXml11RestrictedChar,
+  isXmlChar,
+  type XmlVersion,
+} from "./character.ts";
+import type { FragmentParseOptions, ParseOptions, ParserLimits } from "./types.ts";
 
 interface Mark {
   readonly offset: number;
@@ -52,7 +62,7 @@ interface NamespaceChange {
 }
 
 interface DeclarationFields {
-  version: "1.0";
+  version: XmlVersion;
   encoding?: string;
   standalone?: "yes" | "no";
   span?: SourceSpan;
@@ -79,6 +89,13 @@ interface DocumentFields {
   span?: SourceSpan;
 }
 
+interface FragmentFields {
+  children: ReadonlyArray<Child>;
+  span?: SourceSpan;
+}
+
+type ParseMode = "document" | "fragment";
+
 interface Frame {
   readonly lexicalName: string;
   readonly name: Name;
@@ -90,6 +107,7 @@ interface Frame {
 }
 
 const startMark: Mark = { offset: 0, line: 1, column: 1 };
+const decodeNamespaceContext = SchemaParser.decodeUnknownResult(NamespaceContext);
 
 const isXmlWhitespaceCode = (code: number | undefined) =>
   code === 0x20 || code === 0x9 || code === 0xa || code === 0xd;
@@ -140,6 +158,7 @@ class Cursor {
   index = 0;
   line = 1;
   column = 1;
+  version: XmlVersion;
   private previousWasCarriageReturn = false;
   private readonly iterator: Iterator<string>;
   private readonly segments: Array<string> = [];
@@ -150,9 +169,10 @@ class Cursor {
   private ended = false;
   private readonly inputLengthLimit: number | undefined;
 
-  constructor(chunks: Iterable<string>, inputLengthLimit: number | undefined) {
+  constructor(chunks: Iterable<string>, inputLengthLimit: number | undefined, version: XmlVersion) {
     this.iterator = chunks[Symbol.iterator]();
     this.inputLengthLimit = inputLengthLimit;
+    this.version = version;
   }
 
   private compact() {
@@ -233,12 +253,22 @@ class Cursor {
   validCodePoint() {
     const mark = this.mark();
     const codePoint = this.codePoint();
-    if (codePoint === undefined || !isXml10Char(codePoint)) {
+    if (
+      codePoint === undefined ||
+      !isXmlChar(codePoint, this.version) ||
+      (this.version === "1.1" && isXml11RestrictedChar(codePoint))
+    ) {
       const display =
         codePoint === undefined ? "unknown" : `U+${codePoint.toString(16).toUpperCase()}`;
-      this.fail(`Character ${display} is not permitted by XML 1.0`, mark);
+      this.fail(`Character ${display} is not permitted literally by XML ${this.version}`, mark);
     }
     return codePoint;
+  }
+
+  isWhitespaceCode(code: number | undefined) {
+    return (
+      isXmlWhitespaceCode(code) || (this.version === "1.1" && (code === 0x85 || code === 0x2028))
+    );
   }
 
   advance(count = 1) {
@@ -260,8 +290,8 @@ class Cursor {
           this.line += 1;
           this.column = 1;
           this.previousWasCarriageReturn = true;
-        } else if (code === 0xa) {
-          if (!this.previousWasCarriageReturn) this.line += 1;
+        } else if (code === 0xa || (this.version === "1.1" && (code === 0x85 || code === 0x2028))) {
+          if (!this.previousWasCarriageReturn || code === 0x2028) this.line += 1;
           this.column = 1;
           this.previousWasCarriageReturn = false;
         } else {
@@ -281,7 +311,7 @@ class Cursor {
 
   skipWhitespace() {
     const start = this.index;
-    while (isXmlWhitespaceCode(this.codeUnit())) this.advance();
+    while (this.isWhitespaceCode(this.codeUnit())) this.advance();
     return this.index !== start;
   }
 
@@ -341,7 +371,7 @@ const splitQualifiedName = (cursor: Cursor, name: ReturnType<Cursor["readName"]>
   return { lexical: name.value, localName, prefix, mark: name.mark, end: name.end };
 };
 
-const validatedOptions = (options: ParseOptions) => {
+const validatedOptions = <Options extends ParseOptions>(options: Options) => {
   const input: unknown = options;
   if (!Predicate.isObject(input)) {
     throw new ParseFailure({ detail: "Parser options must be an object", location: startMark });
@@ -377,6 +407,39 @@ const validatedOptions = (options: ParseOptions) => {
   return options;
 };
 
+const validatedFragmentOptions = (options: FragmentParseOptions) => {
+  const checked = validatedOptions(options);
+  if (checked.version !== undefined && checked.version !== "1.0" && checked.version !== "1.1") {
+    throw new ParseFailure({
+      detail: 'Fragment parser version must be either "1.0" or "1.1"',
+      location: startMark,
+    });
+  }
+  if (checked.namespaces === undefined) return checked;
+  const namespaces = decodeNamespaceContext(checked.namespaces);
+  if (Result.isFailure(namespaces)) {
+    throw new ParseFailure({
+      detail: "Fragment parser namespaces must be a valid NamespaceContext",
+      location: startMark,
+    });
+  }
+  const version = checked.version ?? "1.0";
+  for (const binding of namespaces.success.bindings) {
+    for (const character of binding.namespaceUri) {
+      const codePoint = character.codePointAt(0);
+      if (codePoint === undefined || !isXmlChar(codePoint, version)) {
+        const display =
+          codePoint === undefined ? "unknown" : `U+${codePoint.toString(16).toUpperCase()}`;
+        throw new ParseFailure({
+          detail: `Namespace URI character ${display} is not permitted by XML ${version}`,
+          location: startMark,
+        });
+      }
+    }
+  }
+  return { ...checked, namespaces: namespaces.success };
+};
+
 const hasValidEncodingName = (value: string) => {
   if (value.length === 0) return false;
   const first = value.charCodeAt(0);
@@ -407,19 +470,35 @@ class Parser {
   readonly positions = new WeakMap<Node, XmlLocation>();
   readonly locations: boolean;
   readonly limits: ParserLimits | undefined;
+  readonly mode: ParseMode;
   readonly namespaces = new Map<string, string>([["xml", xmlNamespace]]);
   readonly stack: Array<Frame> = [];
   readonly prolog: Array<Misc> = [];
   readonly epilog: Array<Misc> = [];
+  readonly fragmentChildren: Array<Child> = [];
   root: Element | undefined;
   declaration: Declaration | undefined;
   nodeCount = 0;
   textLength = 0;
 
-  constructor(chunks: Iterable<string>, options: ParseOptions) {
-    this.cursor = new Cursor(chunks, options.limits?.inputLength);
+  constructor(
+    chunks: Iterable<string>,
+    options: ParseOptions,
+    mode: ParseMode,
+    version: XmlVersion = "1.0",
+    namespaces?: NamespaceContext,
+  ) {
+    this.cursor = new Cursor(chunks, options.limits?.inputLength, version);
     this.locations = options.locations === true;
     this.limits = options.limits;
+    this.mode = mode;
+    if (mode === "fragment") {
+      for (const binding of namespaces?.bindings ?? []) {
+        const key = binding.prefix ?? "";
+        if (binding.namespaceUri.length === 0) this.namespaces.delete(key);
+        else this.namespaces.set(key, binding.namespaceUri);
+      }
+    }
   }
 
   private locate<NodeType extends Node>(node: NodeType, mark: Mark) {
@@ -453,7 +532,15 @@ class Parser {
     if (codePoint === 0xd) {
       this.reserveText(1, mark);
       cursor.advance();
-      if (cursor.codeUnit() === 0xa) cursor.advance();
+      if (cursor.codeUnit() === 0xa || (cursor.version === "1.1" && cursor.codeUnit() === 0x85)) {
+        cursor.advance();
+      }
+      builder.append(attribute ? " " : "\n");
+      return;
+    }
+    if (cursor.version === "1.1" && (codePoint === 0x85 || codePoint === 0x2028)) {
+      this.reserveText(1, mark);
+      cursor.advance();
       builder.append(attribute ? " " : "\n");
       return;
     }
@@ -485,7 +572,7 @@ class Parser {
         if (digit === undefined) break;
         hasDigit = true;
         if (codePoint > Math.floor((0x10ffff - digit) / radix)) {
-          cursor.fail("Character reference is not permitted by XML 1.0", mark);
+          cursor.fail(`Character reference is not permitted by XML ${cursor.version}`, mark);
         }
         codePoint = codePoint * radix + digit;
         cursor.advance();
@@ -494,8 +581,8 @@ class Parser {
         cursor.fail("Invalid character reference", mark);
       }
       cursor.advance();
-      if (!isXml10Char(codePoint)) {
-        cursor.fail("Character reference is not permitted by XML 1.0", mark);
+      if (!isXmlChar(codePoint, cursor.version)) {
+        cursor.fail(`Character reference is not permitted by XML ${cursor.version}`, mark);
       }
       value = String.fromCodePoint(codePoint);
     } else {
@@ -604,12 +691,10 @@ class Parser {
     if (version.name !== "version") {
       cursor.fail("The XML declaration must begin with the version field", version.mark);
     }
-    if (version.value === "1.1") {
-      cursor.fail("XML 1.1 is not supported; this parser implements XML 1.0", version.mark);
+    if (version.value !== "1.0" && version.value !== "1.1") {
+      cursor.fail("The XML declaration version must be either 1.0 or 1.1", version.mark);
     }
-    if (version.value !== "1.0") {
-      cursor.fail("The XML declaration version must be 1.0", version.mark);
-    }
+    const xmlVersion: XmlVersion = version.value === "1.0" ? "1.0" : "1.1";
 
     let encoding: string | undefined;
     let standalone: "yes" | "no" | undefined;
@@ -641,8 +726,9 @@ class Parser {
       }
     }
     cursor.expect("?>", "Unterminated XML declaration");
+    cursor.version = xmlVersion;
     const fields: DeclarationFields = {
-      version: "1.0",
+      version: xmlVersion,
       ...optionalSpan(this.locations, declarationStart.offset, cursor.index),
     };
     if (encoding !== undefined) fields.encoding = encoding;
@@ -653,6 +739,7 @@ class Parser {
   private appendMisc(node: Misc) {
     const frame = this.stack.at(-1);
     if (frame !== undefined) frame.children.push(node);
+    else if (this.mode === "fragment") this.fragmentChildren.push(node);
     else if (this.root === undefined) this.prolog.push(node);
     else this.epilog.push(node);
   }
@@ -681,21 +768,22 @@ class Parser {
 
   private parseCData() {
     const cursor = this.cursor;
-    const possibleFrame = this.stack.at(-1);
+    const frame = this.stack.at(-1);
     const start = cursor.mark();
-    const frame =
-      possibleFrame ?? cursor.fail("CDATA sections are only allowed inside an element", start);
+    if (frame === undefined && this.mode === "document") {
+      cursor.fail("CDATA sections are only allowed inside an element", start);
+    }
     this.countNode(start);
     cursor.expect("<![CDATA[", "Expected a CDATA section");
     const value = this.readNormalizedUntil("]]>");
     if (cursor.done) cursor.fail("Unterminated CDATA section", start);
     cursor.expect("]]>", "Unterminated CDATA section");
-    frame.children.push(
-      this.locate(
-        new CData({ value, ...optionalSpan(this.locations, start.offset, cursor.index) }),
-        start,
-      ),
+    const cdata = this.locate(
+      new CData({ value, ...optionalSpan(this.locations, start.offset, cursor.index) }),
+      start,
     );
+    if (frame === undefined) this.fragmentChildren.push(cdata);
+    else frame.children.push(cdata);
   }
 
   private parseProcessingInstruction() {
@@ -777,7 +865,7 @@ class Parser {
 
   private applyNamespaceDeclaration(raw: RawAttribute, changes: Array<NamespaceChange>) {
     const prefix = raw.name.prefix === "xmlns" ? raw.name.localName : undefined;
-    const message = validateBinding(prefix, raw.value);
+    const message = validateBinding(prefix, raw.value, this.cursor.version);
     if (message !== undefined) this.cursor.fail(message, raw.mark);
     const key = prefix ?? "";
     changes.push({
@@ -821,6 +909,7 @@ class Parser {
     this.restoreNamespaces(frame.namespaceChanges);
     const parent = this.stack.at(-1);
     if (parent !== undefined) parent.children.push(element);
+    else if (this.mode === "fragment") this.fragmentChildren.push(element);
     else if (this.root === undefined) this.root = element;
     else this.cursor.fail("An XML document must contain exactly one root element", frame.start);
   }
@@ -828,7 +917,7 @@ class Parser {
   private parseStartTag() {
     const cursor = this.cursor;
     const start = cursor.mark();
-    if (this.stack.length === 0 && this.root !== undefined) {
+    if (this.mode === "document" && this.stack.length === 0 && this.root !== undefined) {
       cursor.fail("An XML document must contain exactly one root element", start);
     }
     const depth = this.stack.length + 1;
@@ -937,10 +1026,10 @@ class Parser {
   private parseText() {
     const cursor = this.cursor;
     const start = cursor.mark();
-    if (this.stack.length === 0) {
+    if (this.stack.length === 0 && this.mode === "document") {
       while (!cursor.done && !cursor.startsWith("<")) {
         const codePoint = cursor.validCodePoint();
-        if (!isXmlWhitespaceCode(codePoint)) {
+        if (!cursor.isWhitespaceCode(codePoint)) {
           cursor.fail("Character data is not allowed outside the document root");
         }
         cursor.advance();
@@ -956,26 +1045,31 @@ class Parser {
       if (cursor.codeUnit() === 0x26) builder.append(this.readReference(undefined));
       else this.appendLiteral(builder, false);
     }
-    this.stack.at(-1)?.children.push(
-      this.locate(
-        new Text({
-          value: builder.finish(),
-          ...optionalSpan(this.locations, start.offset, cursor.index),
-        }),
-        start,
-      ),
+    const text = this.locate(
+      new Text({
+        value: builder.finish(),
+        ...optionalSpan(this.locations, start.offset, cursor.index),
+      }),
+      start,
     );
+    const frame = this.stack.at(-1);
+    if (frame === undefined) this.fragmentChildren.push(text);
+    else frame.children.push(text);
   }
 
-  parse() {
+  private parseInput() {
     const cursor = this.cursor;
-    if (cursor.codeUnit() === 0xfeff) cursor.advance();
-    if (
-      cursor.codeUnit() === 0x3c &&
-      cursor.codeUnit(1) === 0x3f &&
+    if (this.mode === "document" && cursor.codeUnit() === 0xfeff) cursor.advance();
+    const declarationStart =
       cursor.startsWith("<?xml") &&
-      (isXmlWhitespaceCode(cursor.codeUnit(5)) || cursor.startsWith("<?xml?>"))
-    ) {
+      (isXmlWhitespaceCode(cursor.codeUnit(5)) ||
+        cursor.codeUnit(5) === 0x85 ||
+        cursor.codeUnit(5) === 0x2028 ||
+        cursor.startsWith("<?xml?>"));
+    if (declarationStart) {
+      if (this.mode === "fragment") {
+        cursor.fail("XML declarations are not allowed in fragments");
+      }
       this.parseDeclaration();
     }
 
@@ -988,15 +1082,33 @@ class Parser {
       if (next === 0x21) {
         if (cursor.startsWith("<!--")) this.parseComment();
         else if (cursor.startsWith("<![CDATA[")) this.parseCData();
-        else if (cursor.startsWith("<!DOCTYPE")) cursor.fail("DTD processing is not supported");
-        else cursor.fail("Unsupported XML markup declaration");
-      } else if (next === 0x3f) this.parseProcessingInstruction();
-      else if (next === 0x2f) this.parseEndTag();
+        else if (cursor.startsWith("<!DOCTYPE")) {
+          cursor.fail(
+            this.mode === "fragment"
+              ? "Document type declarations are not allowed in fragments"
+              : "DTD processing is not supported",
+          );
+        } else cursor.fail("Unsupported XML markup declaration");
+      } else if (next === 0x3f) {
+        if (
+          this.mode === "fragment" &&
+          cursor.startsWith("<?xml") &&
+          (cursor.isWhitespaceCode(cursor.codeUnit(5)) || cursor.startsWith("<?xml?>"))
+        ) {
+          cursor.fail("XML declarations are not allowed in fragments");
+        }
+        this.parseProcessingInstruction();
+      } else if (next === 0x2f) this.parseEndTag();
       else this.parseStartTag();
     }
 
     const open = this.stack.at(-1);
     if (open !== undefined) cursor.fail(`Unclosed element <${open.lexicalName}>`, cursor.mark());
+  }
+
+  parseDocument() {
+    this.parseInput();
+    const cursor = this.cursor;
     const root = this.root ?? cursor.fail("XML document has no root element", cursor.mark());
     const fields: DocumentFields = {
       prolog: this.prolog,
@@ -1008,17 +1120,52 @@ class Parser {
     const document = this.locate(new Document(fields), startMark);
     return { document, positions: this.positions };
   }
+
+  parseFragment() {
+    this.parseInput();
+    const fields: FragmentFields = {
+      children: this.fragmentChildren,
+      ...optionalSpan(this.locations, 0, this.cursor.index),
+    };
+    const fragment = this.locate(new Fragment(fields), startMark);
+    return { fragment, positions: this.positions };
+  }
 }
 
-/** @internal Chunk-boundary-independent parser entry used by the string facade. */
+const parseFailure = (cause: unknown) => {
+  if (Predicate.isTagged(cause, "ParseFailure") && cause instanceof ParseFailure) {
+    return Result.fail(makeIssue(cause));
+  }
+  throw cause;
+};
+
+/** @internal Chunk-boundary-independent document parser used by the string facade. */
 export const parseDocumentChunks = (chunks: Iterable<string>, options: ParseOptions = {}) => {
   try {
     const checkedOptions = validatedOptions(options);
-    return Result.succeed(new Parser(chunks, checkedOptions).parse());
+    return Result.succeed(new Parser(chunks, checkedOptions, "document").parseDocument());
   } catch (cause) {
-    if (Predicate.isTagged(cause, "ParseFailure") && cause instanceof ParseFailure) {
-      return Result.fail(makeIssue(cause));
-    }
-    throw cause;
+    return parseFailure(cause);
+  }
+};
+
+/** @internal Chunk-boundary-independent fragment parser used by the string facade. */
+export const parseFragmentChunks = (
+  chunks: Iterable<string>,
+  options: FragmentParseOptions = {},
+) => {
+  try {
+    const checkedOptions = validatedFragmentOptions(options);
+    return Result.succeed(
+      new Parser(
+        chunks,
+        checkedOptions,
+        "fragment",
+        checkedOptions.version ?? "1.0",
+        checkedOptions.namespaces,
+      ).parseFragment(),
+    );
+  } catch (cause) {
+    return parseFailure(cause);
   }
 };

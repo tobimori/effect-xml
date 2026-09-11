@@ -1,6 +1,9 @@
 import type { Document } from "../ast/document.ts";
+import type { Fragment } from "../ast/fragment.ts";
 import type { Node } from "../ast/node.ts";
+import type { NamespaceContext } from "../namespace/context.ts";
 import type { XmlLocation } from "../schema/provenance.ts";
+import type { XmlVersion } from "./character.ts";
 
 /** Optional parser resource ceilings. Omitted limits are unlimited. */
 export interface ParserLimits {
@@ -21,7 +24,19 @@ export interface ParseOptions {
   readonly limits?: ParserLimits;
 }
 
+export interface FragmentParseOptions extends ParseOptions {
+  /** XML policy for declaration-free input. Defaults to XML 1.0. */
+  readonly version?: XmlVersion;
+  /** Namespace bindings inherited from the fragment's surrounding scope. */
+  readonly namespaces?: NamespaceContext;
+}
+
 export interface ParsedDocument {
   readonly document: Document;
+  readonly positions: WeakMap<Node, XmlLocation>;
+}
+
+export interface ParsedFragment {
+  readonly fragment: Fragment;
   readonly positions: WeakMap<Node, XmlLocation>;
 }

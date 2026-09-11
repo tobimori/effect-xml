@@ -8,6 +8,9 @@ export const isXmlWhitespace = (value: string) => {
   return true;
 };
 
+/** XML edition used by character and namespace policies. */
+export type XmlVersion = "1.0" | "1.1";
+
 /** Returns whether a Unicode code point is permitted by XML 1.0 Fifth Edition. */
 export const isXml10Char = (codePoint: number) =>
   codePoint === 0x9 ||
@@ -16,6 +19,24 @@ export const isXml10Char = (codePoint: number) =>
   (codePoint >= 0x20 && codePoint <= 0xd7ff) ||
   (codePoint >= 0xe000 && codePoint <= 0xfffd) ||
   (codePoint >= 0x10000 && codePoint <= 0x10ffff);
+
+/** Returns whether a Unicode code point is permitted by XML 1.1 Second Edition. */
+export const isXml11Char = (codePoint: number) =>
+  (codePoint >= 0x1 && codePoint <= 0xd7ff) ||
+  (codePoint >= 0xe000 && codePoint <= 0xfffd) ||
+  (codePoint >= 0x10000 && codePoint <= 0x10ffff);
+
+/** Returns whether XML 1.1 permits a code point only through a character reference. */
+export const isXml11RestrictedChar = (codePoint: number) =>
+  (codePoint >= 0x1 && codePoint <= 0x8) ||
+  (codePoint >= 0xb && codePoint <= 0xc) ||
+  (codePoint >= 0xe && codePoint <= 0x1f) ||
+  (codePoint >= 0x7f && codePoint <= 0x84) ||
+  (codePoint >= 0x86 && codePoint <= 0x9f);
+
+/** Returns whether a Unicode code point is permitted by the selected XML edition. */
+export const isXmlChar = (codePoint: number, version: XmlVersion) =>
+  version === "1.0" ? isXml10Char(codePoint) : isXml11Char(codePoint);
 
 /** Returns whether a Unicode code point is an XML 1.0 NameStartChar. */
 export const isXml10NameStart = (codePoint: number) =>

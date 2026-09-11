@@ -29,8 +29,18 @@ export class ActiveNamespaces {
     return prefix === "xml" ? xmlNamespace : this.#byPrefix.get(prefix)?.namespaceUri;
   }
 
+  /** Resolves a name prefix, treating an XML 1.1 empty prefixed binding as undeclared. */
+  resolve(prefix: Prefix) {
+    const namespaceUri = this.lookup(prefix);
+    return prefix !== undefined && namespaceUri === "" ? undefined : namespaceUri;
+  }
+
   hasPrefix(prefix: Prefix) {
     return prefix === "xml" || this.#byPrefix.has(prefix);
+  }
+
+  isBound(prefix: Prefix) {
+    return this.resolve(prefix) !== undefined;
   }
 
   findPrefix(namespaceUri: string, allowDefault: boolean) {

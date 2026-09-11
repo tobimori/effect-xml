@@ -5,16 +5,20 @@ import * as SchemaParser from "effect/SchemaParser";
 
 import { Document, type Misc } from "../ast/document.ts";
 import { isElement, type Child, type Element } from "../ast/element.ts";
+import { Fragment as AstFragment } from "../ast/fragment.ts";
 import type { Name } from "../ast/name.ts";
 import type { NamespaceDeclaration } from "../ast/namespace-declaration.ts";
 import { isProcessingInstruction } from "../ast/processing-instruction.ts";
 import { isCData, isText } from "../ast/text.ts";
 import { isComment } from "../ast/comment.ts";
-import { isNcName, isXml10Char } from "../parser/character.ts";
+import { NamespaceContext } from "../namespace/context.ts";
 import { ActiveNamespaces, type NamespaceUndo } from "../namespace/prefix.ts";
 import { validateBinding, xmlNamespace, xmlnsNamespace } from "../namespace/validation.ts";
+import { isNcName, isXml11RestrictedChar, isXmlChar } from "../parser/character.ts";
 
-/** Options used by the low-level XML document serializer. */
+export type XmlVersion = "1.0" | "1.1";
+
+/** Options used by the low-level XML serializer. */
 export interface SerializeOptions {
   readonly pretty?: boolean;
   readonly indent?: string;
@@ -22,6 +26,12 @@ export interface SerializeOptions {
   readonly structured?: WeakSet<Element>;
   /** @internal Elements produced by typed codecs whose namespace prefixes may be allocated. */
   readonly typed?: WeakSet<Element>;
+}
+
+/** Options used when serializing an ordered XML fragment. */
+export interface FragmentSerializeOptions extends SerializeOptions {
+  readonly version?: XmlVersion;
+  readonly namespaces?: NamespaceContext;
 }
 
 interface NodeAction {
@@ -41,20 +51,17 @@ interface NamespaceExitAction {
 type Action = NodeAction | OutputAction | NamespaceExitAction;
 
 const decodeDocument = SchemaParser.decodeUnknownResult(Document);
+const decodeFragment = SchemaParser.decodeUnknownResult(AstFragment);
+const decodeNamespaceContext = SchemaParser.decodeUnknownResult(NamespaceContext);
 
 const invalid = (message: string) => new SchemaIssue.InvalidValue({ message });
 
 const failure = (message: string) => Result.fail<SchemaIssue.Issue>(invalid(message));
 
 /** Finds recursive element cycles without rejecting shared, already-completed subtrees. */
-const findElementCycle = (document: Document) => {
-  const input: unknown = document;
-  if (!Predicate.isObject(input) || !Predicate.hasProperty(input, "root")) return false;
-  const root = input.root;
-  if (!Predicate.isObject(root) || !Predicate.hasProperty(root, "children")) return false;
-
+const findElementCycle = (roots: ReadonlyArray<unknown>) => {
   interface ElementCandidate {
-    readonly children: unknown;
+    readonly children: ReadonlyArray<unknown>;
   }
 
   interface Visit {
@@ -62,8 +69,20 @@ const findElementCycle = (document: Document) => {
     readonly exiting: boolean;
   }
 
+  const work: Array<Visit> = [];
+  for (let index = roots.length - 1; index >= 0; index--) {
+    const root = roots[index];
+    if (
+      Predicate.isObject(root) &&
+      Predicate.hasProperty(root, "children") &&
+      Array.isArray(root.children)
+    ) {
+      // SAFETY: The checks above establish the candidate's readonly children array.
+      work.push({ element: root as ElementCandidate, exiting: false });
+    }
+  }
+
   const states = new WeakMap<object, "active" | "complete">();
-  const work: Array<Visit> = [{ element: root, exiting: false }];
   while (work.length > 0) {
     const visit = work.pop();
     if (visit === undefined) continue;
@@ -79,17 +98,15 @@ const findElementCycle = (document: Document) => {
 
     states.set(visit.element, "active");
     work.push({ element: visit.element, exiting: true });
-
-    const children = visit.element.children;
-    if (!Array.isArray(children)) continue;
-    for (let index = children.length - 1; index >= 0; index--) {
-      const child: unknown = children[index];
+    for (let index = visit.element.children.length - 1; index >= 0; index--) {
+      const child = visit.element.children[index];
       if (
         Predicate.isObject(child) &&
         Predicate.hasProperty(child, "children") &&
         Array.isArray(child.children)
       ) {
-        work.push({ element: child, exiting: false });
+        // SAFETY: The checks above establish the candidate's readonly children array.
+        work.push({ element: child as ElementCandidate, exiting: false });
       }
     }
   }
@@ -99,13 +116,13 @@ const findElementCycle = (document: Document) => {
 const codePointLabel = (codePoint: number) =>
   `U+${codePoint.toString(16).toUpperCase().padStart(4, "0")}`;
 
-const invalidCharacter = (value: string, context: string) => {
+const invalidCharacter = (value: string, context: string, version: XmlVersion) => {
   let offset = 0;
   for (const character of value) {
     const codePoint = character.codePointAt(0);
-    if (codePoint === undefined || !isXml10Char(codePoint)) {
+    if (codePoint === undefined || !isXmlChar(codePoint, version)) {
       return invalid(
-        `${context} contains an invalid XML 1.0 character ${codePointLabel(codePoint ?? 0)} at UTF-16 offset ${offset}`,
+        `${context} contains an invalid XML ${version} character ${codePointLabel(codePoint ?? 0)} at UTF-16 offset ${offset}`,
       );
     }
     offset += character.length;
@@ -113,59 +130,88 @@ const invalidCharacter = (value: string, context: string) => {
   return undefined;
 };
 
-const escapeText = (value: string) => {
-  const characterIssue = invalidCharacter(value, "Text");
+const characterReference = (codePoint: number) => `&#x${codePoint.toString(16).toUpperCase()};`;
+
+const xml11NeedsReference = (codePoint: number) =>
+  isXml11RestrictedChar(codePoint) || codePoint === 0x85 || codePoint === 0x2028;
+
+const escapeText = (value: string, version: XmlVersion) => {
+  const characterIssue = invalidCharacter(value, "Text", version);
   if (characterIssue !== undefined) return Result.fail(characterIssue);
 
   const output: Array<string> = [];
+  let offset = 0;
   let literalStart = 0;
-  for (let index = 0; index < value.length; index++) {
-    const character = value[index];
+  for (const character of value) {
+    const codePoint = character.codePointAt(0)!;
     let replacement: string | undefined;
     if (character === "&") replacement = "&amp;";
     else if (character === "<") replacement = "&lt;";
-    else if (character === "\r") replacement = "&#xD;";
     else if (character === ">") replacement = "&gt;";
-    if (replacement === undefined) continue;
-    output.push(value.slice(literalStart, index), replacement);
-    literalStart = index + 1;
+    else if (codePoint === 0x0d || (version === "1.1" && xml11NeedsReference(codePoint))) {
+      replacement = characterReference(codePoint);
+    }
+    if (replacement !== undefined) {
+      output.push(value.slice(literalStart, offset), replacement);
+      literalStart = offset + character.length;
+    }
+    offset += character.length;
   }
   output.push(value.slice(literalStart));
   return Result.succeed(output.join(""));
 };
 
-const escapeAttribute = (value: string, context: string) => {
-  const characterIssue = invalidCharacter(value, context);
+const escapeAttribute = (value: string, context: string, version: XmlVersion) => {
+  const characterIssue = invalidCharacter(value, context, version);
   if (characterIssue !== undefined) return Result.fail(characterIssue);
 
   const output: Array<string> = [];
+  let offset = 0;
   let literalStart = 0;
-  for (let index = 0; index < value.length; index++) {
-    const character = value[index];
+  for (const character of value) {
+    const codePoint = character.codePointAt(0)!;
     let replacement: string | undefined;
     if (character === "&") replacement = "&amp;";
     else if (character === "<") replacement = "&lt;";
     else if (character === '"') replacement = "&quot;";
-    else if (character === "\t") replacement = "&#x9;";
-    else if (character === "\n") replacement = "&#xA;";
-    else if (character === "\r") replacement = "&#xD;";
-    if (replacement === undefined) continue;
-    output.push(value.slice(literalStart, index), replacement);
-    literalStart = index + 1;
+    else if (
+      codePoint === 0x09 ||
+      codePoint === 0x0a ||
+      codePoint === 0x0d ||
+      (version === "1.1" && xml11NeedsReference(codePoint))
+    ) {
+      replacement = characterReference(codePoint);
+    }
+    if (replacement !== undefined) {
+      output.push(value.slice(literalStart, offset), replacement);
+      literalStart = offset + character.length;
+    }
+    offset += character.length;
   }
   output.push(value.slice(literalStart));
   return Result.succeed(output.join(""));
 };
 
-const validateLiteral = (value: string, context: string) => {
-  const characterIssue = invalidCharacter(value, context);
+const validateLiteral = (value: string, context: string, version: XmlVersion) => {
+  const characterIssue = invalidCharacter(value, context, version);
   if (characterIssue !== undefined) return characterIssue;
-  const carriageReturn = value.indexOf("\r");
-  return carriageReturn < 0
-    ? undefined
-    : invalid(
-        `${context} contains a literal carriage return at UTF-16 offset ${carriageReturn}, which XML parsing would normalize`,
+
+  let offset = 0;
+  for (const character of value) {
+    const codePoint = character.codePointAt(0)!;
+    if (version === "1.1" && isXml11RestrictedChar(codePoint)) {
+      return invalid(
+        `${context} contains restricted XML 1.1 character ${codePointLabel(codePoint)} at UTF-16 offset ${offset}, which cannot be represented literally`,
       );
+    }
+    if (codePoint === 0x0d || (version === "1.1" && (codePoint === 0x85 || codePoint === 0x2028))) {
+      return invalid(
+        `${context} contains normalization-sensitive literal character ${codePointLabel(codePoint)} at UTF-16 offset ${offset}`,
+      );
+    }
+    offset += character.length;
+  }
+  return undefined;
 };
 
 const qualifiedName = (name: Name) =>
@@ -219,7 +265,7 @@ const validateBoundName = (name: Name, bindings: ActiveNamespaces, attribute: bo
       `${attribute ? "Attribute" : "Element"} ${JSON.stringify(qualifiedName(name))} has a prefix but no namespace URI`,
     );
   }
-  const resolved = bindings.lookup(name.prefix);
+  const resolved = bindings.resolve(name.prefix);
   return resolved === name.namespaceUri
     ? undefined
     : invalid(
@@ -231,6 +277,7 @@ const enterNamespaceScope = (
   declarations: ReadonlyArray<NamespaceDeclaration>,
   bindings: ActiveNamespaces,
   typed: boolean,
+  version: XmlVersion,
 ) => {
   const declared = new Map<string | undefined, string>();
   for (const declaration of declarations) {
@@ -240,7 +287,7 @@ const enterNamespaceScope = (
       );
     }
     declared.set(declaration.prefix, declaration.namespaceUri);
-    const bindingIssue = validateBinding(declaration.prefix, declaration.namespaceUri);
+    const bindingIssue = validateBinding(declaration.prefix, declaration.namespaceUri, version);
     if (bindingIssue !== undefined) return failure(bindingIssue);
   }
 
@@ -251,9 +298,7 @@ const enterNamespaceScope = (
     const redundant =
       typed &&
       (current === declaration.namespaceUri ||
-        (declaration.prefix === undefined &&
-          declaration.namespaceUri === "" &&
-          current === undefined));
+        (declaration.namespaceUri === "" && current === undefined));
     if (redundant) continue;
     emitted.push(declaration);
     undo.push(bindings.enter(declaration.prefix, declaration.namespaceUri));
@@ -296,9 +341,6 @@ const canFormatChildren = (
 const serializeDeclaration = (document: Document) => {
   const declaration = document.declaration;
   if (declaration === undefined) return Result.succeed("");
-  if (declaration.version !== "1.0") {
-    return failure("XML 1.1 serialization is not supported by the RSS serializer");
-  }
   if (
     declaration.encoding !== undefined &&
     !/^[A-Za-z][A-Za-z0-9._-]*$/u.test(declaration.encoding)
@@ -306,7 +348,7 @@ const serializeDeclaration = (document: Document) => {
     return failure(`XML declaration encoding ${JSON.stringify(declaration.encoding)} is invalid`);
   }
 
-  let output = '<?xml version="1.0"';
+  let output = `<?xml version="${declaration.version}"`;
   if (declaration.encoding !== undefined) output += ` encoding="${declaration.encoding}"`;
   if (declaration.standalone !== undefined) output += ` standalone="${declaration.standalone}"`;
   return Result.succeed(`${output}?>`);
@@ -317,7 +359,7 @@ interface RenderedDeclaration {
   readonly namespaceUri: string;
 }
 
-const validateTypedName = (name: Name, attribute: boolean) => {
+const validateTypedName = (name: Name, attribute: boolean, version: XmlVersion) => {
   const nameIssue = validateName(name, attribute ? "Attribute" : "Element");
   if (nameIssue !== undefined) return nameIssue;
 
@@ -338,7 +380,7 @@ const validateTypedName = (name: Name, attribute: boolean) => {
       `${attribute ? "Attribute" : "Element"} ${JSON.stringify(qualifiedName(name))} has a prefix but no namespace URI`,
     );
   }
-  const bindingIssue = validateBinding(name.prefix, name.namespaceUri);
+  const bindingIssue = validateBinding(name.prefix, name.namespaceUri, version);
   return bindingIssue === undefined ? undefined : invalid(bindingIssue);
 };
 
@@ -350,8 +392,9 @@ const allocateTypedName = (
   generated: Array<RenderedDeclaration>,
   namespaceUndo: Array<NamespaceUndo>,
   nextGeneratedPrefix: () => string,
+  version: XmlVersion,
 ) => {
-  const nameIssue = validateTypedName(name, attribute);
+  const nameIssue = validateTypedName(name, attribute, version);
   if (nameIssue !== undefined) return Result.fail<SchemaIssue.Issue>(nameIssue);
 
   const namespaceUri = name.namespaceUri;
@@ -382,8 +425,13 @@ const allocateTypedName = (
   let prefix: string | undefined;
   if (!attribute && name.prefix === undefined && !explicitBindings.has(undefined)) {
     prefix = undefined;
-  } else if (name.prefix !== undefined && !bindings.hasPrefix(name.prefix)) prefix = name.prefix;
-  else prefix = nextGeneratedPrefix();
+  } else if (
+    name.prefix !== undefined &&
+    !bindings.isBound(name.prefix) &&
+    !explicitBindings.has(name.prefix)
+  ) {
+    prefix = name.prefix;
+  } else prefix = nextGeneratedPrefix();
 
   generated.push({ prefix, namespaceUri });
   namespaceUndo.push(bindings.enter(prefix, namespaceUri));
@@ -395,12 +443,19 @@ const serializeElementStart = (
   bindings: ActiveNamespaces,
   typed: boolean,
   nextGeneratedPrefix: () => string,
+  version: XmlVersion,
 ) => {
-  const scopeResult = enterNamespaceScope(element.namespaceDeclarations, bindings, typed);
+  const scopeResult = enterNamespaceScope(element.namespaceDeclarations, bindings, typed, version);
   if (Result.isFailure(scopeResult)) return Result.fail(scopeResult.failure);
   const [explicitDeclarations, entered, explicitBindings] = scopeResult.success;
   const namespaceUndo = [...entered];
   const generatedDeclarations: Array<RenderedDeclaration> = [];
+  const nextAvailablePrefix = () => {
+    let prefix: string;
+    do prefix = nextGeneratedPrefix();
+    while (explicitBindings.has(prefix));
+    return prefix;
+  };
 
   const elementNameResult = typed
     ? allocateTypedName(
@@ -410,7 +465,8 @@ const serializeElementStart = (
         explicitBindings,
         generatedDeclarations,
         namespaceUndo,
-        nextGeneratedPrefix,
+        nextAvailablePrefix,
+        version,
       )
     : (() => {
         const issue = validateBoundName(element.name, bindings, false);
@@ -431,7 +487,8 @@ const serializeElementStart = (
           explicitBindings,
           generatedDeclarations,
           namespaceUndo,
-          nextGeneratedPrefix,
+          nextAvailablePrefix,
+          version,
         )
       : (() => {
           const issue = validateBoundName(attribute.name, bindings, true);
@@ -456,6 +513,7 @@ const serializeElementStart = (
     const escaped = escapeAttribute(
       attribute.value,
       `Attribute ${JSON.stringify(attributeNameResult.success)}`,
+      version,
     );
     if (Result.isFailure(escaped)) return Result.fail(escaped.failure);
     renderedAttributes.push([attributeNameResult.success, escaped.success]);
@@ -463,7 +521,7 @@ const serializeElementStart = (
 
   const output: Array<string> = [`<${elementNameResult.success}`];
   for (const declaration of [...explicitDeclarations, ...generatedDeclarations]) {
-    const escaped = escapeAttribute(declaration.namespaceUri, "Namespace URI");
+    const escaped = escapeAttribute(declaration.namespaceUri, "Namespace URI", version);
     if (Result.isFailure(escaped)) return Result.fail(escaped.failure);
     const declarationName =
       declaration.prefix === undefined ? "xmlns" : `xmlns:${declaration.prefix}`;
@@ -478,16 +536,16 @@ const serializeElementStart = (
   ]);
 };
 
-const serializeLeaf = (node: Exclude<Child | Misc, Element>) => {
-  if (isText(node)) return escapeText(node.value);
+const serializeLeaf = (node: Exclude<Child | Misc, Element>, version: XmlVersion) => {
+  if (isText(node)) return escapeText(node.value, version);
   if (isCData(node)) {
-    const literalIssue = validateLiteral(node.value, "CDATA");
+    const literalIssue = validateLiteral(node.value, "CDATA", version);
     return literalIssue === undefined
       ? Result.succeed(`<![CDATA[${node.value.replaceAll("]]>", "]]]]><![CDATA[>")}]]>`)
       : Result.fail<SchemaIssue.Issue>(literalIssue);
   }
   if (isComment(node)) {
-    const literalIssue = validateLiteral(node.value, "Comment");
+    const literalIssue = validateLiteral(node.value, "Comment", version);
     if (literalIssue !== undefined) return Result.fail<SchemaIssue.Issue>(literalIssue);
     if (node.value.includes("--") || node.value.endsWith("-")) {
       return failure("Comment content must not contain -- or end with -");
@@ -498,7 +556,7 @@ const serializeLeaf = (node: Exclude<Child | Misc, Element>) => {
     if (!isNcName(node.target) || node.target.toLowerCase() === "xml") {
       return failure(`Processing instruction target ${JSON.stringify(node.target)} is invalid`);
     }
-    const literalIssue = validateLiteral(node.value, "Processing instruction data");
+    const literalIssue = validateLiteral(node.value, "Processing instruction data", version);
     if (literalIssue !== undefined) return Result.fail<SchemaIssue.Issue>(literalIssue);
     const first = node.value.charCodeAt(0);
     if (first === 0x09 || first === 0x0a || first === 0x0d || first === 0x20) {
@@ -513,6 +571,13 @@ const serializeLeaf = (node: Exclude<Child | Misc, Element>) => {
   }
   return failure("Unsupported XML node");
 };
+
+interface WriterOptions {
+  readonly pretty: boolean;
+  readonly indent: string;
+  readonly structured: WeakSet<Element> | undefined;
+  readonly typed: WeakSet<Element> | undefined;
+}
 
 const validateOptions = (options: SerializeOptions | undefined) => {
   const input: unknown = options;
@@ -554,59 +619,98 @@ const validateOptions = (options: SerializeOptions | undefined) => {
 
   const pretty = options?.pretty ?? true;
   const indent = options?.indent ?? "  ";
-  const structured = options?.structured;
-  const typed = options?.typed;
   if (pretty && !/^[\t ]*$/u.test(indent)) {
     return failure("Serializer indent must contain only spaces and tabs");
   }
-  return Result.succeed<
-    readonly [boolean, string, WeakSet<Element> | undefined, WeakSet<Element> | undefined]
-  >([pretty, indent, structured, typed]);
+  return Result.succeed<WriterOptions>({
+    pretty,
+    indent,
+    structured: options?.structured,
+    typed: options?.typed,
+  });
 };
 
-/** Serializes a fully validated XML 1.0 document without recursive tree traversal. */
-// RETURN TYPE: Keeps the serializer contract's public Effect issue channel stable
-export const serializeDocument = (
-  document: Document,
-  options?: SerializeOptions,
-): Result.Result<string, SchemaIssue.Issue> => {
-  const optionResult = validateOptions(options);
-  if (Result.isFailure(optionResult)) return Result.fail(optionResult.failure);
-  const [pretty, indent, structured, typed] = optionResult.success;
+const fragmentVersion = (options: FragmentSerializeOptions | undefined) => {
+  const input: unknown = options;
+  if (
+    Predicate.isObject(input) &&
+    Predicate.hasProperty(input, "version") &&
+    input.version !== undefined &&
+    input.version !== "1.0" &&
+    input.version !== "1.1"
+  ) {
+    return failure('Serializer option version must be "1.0" or "1.1"');
+  }
+  return Result.succeed<XmlVersion>(options?.version ?? "1.0");
+};
 
-  if (findElementCycle(document)) return failure("XML element content contains a cycle");
+const fragmentNamespaces = (options: FragmentSerializeOptions | undefined, version: XmlVersion) => {
+  const input: unknown = options;
+  if (
+    !Predicate.isObject(input) ||
+    !Predicate.hasProperty(input, "namespaces") ||
+    input.namespaces === undefined
+  ) {
+    return Result.succeed<NamespaceContext | undefined>(undefined);
+  }
 
-  const documentResult = decodeDocument(document);
-  if (Result.isFailure(documentResult)) return Result.fail(documentResult.failure);
+  const contextResult = decodeNamespaceContext(input.namespaces);
+  if (Result.isFailure(contextResult)) return Result.fail(contextResult.failure);
+  for (const binding of contextResult.success.bindings) {
+    const bindingIssue = validateBinding(binding.prefix, binding.namespaceUri, version);
+    if (bindingIssue !== undefined) return failure(bindingIssue);
+    const characterIssue = invalidCharacter(binding.namespaceUri, "Namespace URI", version);
+    if (characterIssue !== undefined) return Result.fail(characterIssue);
+  }
+  return Result.succeed<NamespaceContext | undefined>(contextResult.success);
+};
 
-  const declarationResult = serializeDeclaration(document);
-  if (Result.isFailure(declarationResult)) return declarationResult;
+const documentElementRoots = (value: Document) => {
+  const input: unknown = value;
+  return Predicate.isObject(input) && Predicate.hasProperty(input, "root") ? [input.root] : [];
+};
 
-  const topLevel: ReadonlyArray<Child | Misc> = [
-    ...document.prolog,
-    document.root,
-    ...document.epilog,
-  ];
-  const formatDocument = pretty && structured?.has(document.root) === true;
+const fragmentElementRoots = (value: AstFragment) => {
+  const input: unknown = value;
+  return Predicate.isObject(input) &&
+    Predicate.hasProperty(input, "children") &&
+    Array.isArray(input.children)
+    ? input.children
+    : [];
+};
+
+interface WriteNodesOptions {
+  readonly nodes: ReadonlyArray<Child | Misc>;
+  readonly version: XmlVersion;
+  readonly writer: WriterOptions;
+  readonly bindings: ActiveNamespaces;
+  readonly leadingOutput?: string;
+  readonly formatTopLevel?: boolean;
+}
+
+/** Shared iterative writer for complete documents and unwrapped fragments. */
+const writeNodes = (options: WriteNodesOptions) => {
+  const { bindings, nodes, version, writer } = options;
   const output: Array<string> = [];
-  if (declarationResult.success.length > 0) output.push(declarationResult.success);
+  if (options.leadingOutput !== undefined && options.leadingOutput.length > 0) {
+    output.push(options.leadingOutput);
+  }
 
-  const bindings = new ActiveNamespaces();
   let generatedPrefix = 1;
   const nextGeneratedPrefix = () => {
     let prefix: string;
     do prefix = `ns${generatedPrefix++}`;
-    while (bindings.hasPrefix(prefix));
+    while (bindings.isBound(prefix));
     return prefix;
   };
+
   const actions: Array<Action> = [];
-  for (let index = topLevel.length - 1; index >= 0; index--) {
-    actions.push({
-      node: topLevel[index]!,
-      preserveSpace: false,
-      depth: 0,
-    });
-    if (formatDocument && (index > 0 || declarationResult.success.length > 0)) {
+  for (let index = nodes.length - 1; index >= 0; index--) {
+    actions.push({ node: nodes[index]!, preserveSpace: false, depth: 0 });
+    if (
+      options.formatTopLevel === true &&
+      (index > 0 || (options.leadingOutput?.length ?? 0) > 0)
+    ) {
       actions.push({ output: "\n" });
     }
   }
@@ -625,7 +729,7 @@ export const serializeDocument = (
 
     const { depth, node, preserveSpace: inheritedSpace } = action;
     if (!isElement(node)) {
-      const leafResult = serializeLeaf(node);
+      const leafResult = serializeLeaf(node, version);
       if (Result.isFailure(leafResult)) return leafResult;
       output.push(leafResult.success);
       continue;
@@ -634,8 +738,9 @@ export const serializeDocument = (
     const startResult = serializeElementStart(
       node,
       bindings,
-      typed?.has(node) === true,
+      writer.typed?.has(node) === true,
       nextGeneratedPrefix,
+      version,
     );
     if (Result.isFailure(startResult)) return Result.fail(startResult.failure);
     const [start, closingName, namespaceUndo] = startResult.success;
@@ -649,22 +754,84 @@ export const serializeDocument = (
     }
     output.push(">");
 
-    const formatChildren = canFormatChildren(node, pretty, structured, preserveSpace);
+    const formatChildren = canFormatChildren(node, writer.pretty, writer.structured, preserveSpace);
     actions.push({ namespaceUndo });
     actions.push({
-      output: formatChildren ? `\n${indent.repeat(depth)}</${closingName}>` : `</${closingName}>`,
+      output: formatChildren
+        ? `\n${writer.indent.repeat(depth)}</${closingName}>`
+        : `</${closingName}>`,
     });
     for (let index = node.children.length - 1; index >= 0; index--) {
-      actions.push({
-        node: node.children[index]!,
-        preserveSpace,
-        depth: depth + 1,
-      });
+      actions.push({ node: node.children[index]!, preserveSpace, depth: depth + 1 });
       if (formatChildren) {
-        actions.push({ output: `\n${indent.repeat(depth + 1)}` });
+        actions.push({ output: `\n${writer.indent.repeat(depth + 1)}` });
       }
     }
   }
 
   return Result.succeed(output.join(""));
+};
+
+/** Serializes a fully validated XML document without recursive tree traversal. */
+// RETURN TYPE: Keeps the serializer contract's public Effect issue channel stable
+export const serializeDocument = (
+  document: Document,
+  options?: SerializeOptions,
+): Result.Result<string, SchemaIssue.Issue> => {
+  const optionResult = validateOptions(options);
+  if (Result.isFailure(optionResult)) return Result.fail(optionResult.failure);
+
+  if (findElementCycle(documentElementRoots(document))) {
+    return failure("XML element content contains a cycle");
+  }
+  const documentResult = decodeDocument(document);
+  if (Result.isFailure(documentResult)) return Result.fail(documentResult.failure);
+  const declarationResult = serializeDeclaration(document);
+  if (Result.isFailure(declarationResult)) return declarationResult;
+  const version = document.declaration?.version ?? "1.0";
+  const nodes: ReadonlyArray<Child | Misc> = [
+    ...document.prolog,
+    document.root,
+    ...document.epilog,
+  ];
+  return writeNodes({
+    nodes,
+    version,
+    writer: optionResult.success,
+    bindings: new ActiveNamespaces(),
+    leadingOutput: declarationResult.success,
+    formatTopLevel:
+      optionResult.success.pretty && optionResult.success.structured?.has(document.root) === true,
+  });
+};
+
+/** Serializes ordered XML content without adding a declaration, DTD, or wrapper node. */
+// RETURN TYPE: Keeps the serializer contract's public Effect issue channel stable
+export const serializeFragment = (
+  fragment: AstFragment,
+  options?: FragmentSerializeOptions,
+): Result.Result<string, SchemaIssue.Issue> => {
+  const optionResult = validateOptions(options);
+  if (Result.isFailure(optionResult)) return Result.fail(optionResult.failure);
+  const versionResult = fragmentVersion(options);
+  if (Result.isFailure(versionResult)) return Result.fail(versionResult.failure);
+  const namespacesResult = fragmentNamespaces(options, versionResult.success);
+  if (Result.isFailure(namespacesResult)) return Result.fail(namespacesResult.failure);
+
+  if (findElementCycle(fragmentElementRoots(fragment))) {
+    return failure("XML element content contains a cycle");
+  }
+  const fragmentResult = decodeFragment(fragment);
+  if (Result.isFailure(fragmentResult)) return Result.fail(fragmentResult.failure);
+
+  const bindings = new ActiveNamespaces();
+  for (const binding of namespacesResult.success?.bindings ?? []) {
+    bindings.enter(binding.prefix, binding.namespaceUri);
+  }
+  return writeNodes({
+    nodes: fragment.children,
+    version: versionResult.success,
+    writer: optionResult.success,
+    bindings,
+  });
 };
