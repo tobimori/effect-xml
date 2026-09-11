@@ -182,7 +182,21 @@ export const Nil = <S extends Encodes<ElementNode>>(
             });
           }),
         encode: (input, options) => {
-          if (input !== null) return Effect.succeed(input);
+          if (input !== null) {
+            const controls = input.attributes.filter(isNilAttribute);
+            return controls.length === 0
+              ? Effect.succeed(input)
+              : Effect.fail(
+                  new SchemaIssue.InvalidValue(
+                    {
+                      message:
+                        "A non-null Xml.Nil value cannot encode an xsi:nil control attribute",
+                    },
+                    controls,
+                    options,
+                  ),
+                );
+          }
           return Effect.flatMap(PlacementBindings, (scope) => {
             const name =
               resolvedCodecName(placement.name) ?? resolvePlacementName(scope, placement.token);

@@ -7,7 +7,12 @@ import * as SchemaTransformation from "effect/SchemaTransformation";
 import { Fragment as AstFragment } from "../ast/fragment.ts";
 import { parseFragment, type FragmentParseOptions } from "../parser/parser.ts";
 import { serializeFragment, type FragmentSerializeOptions } from "../serializer/serializer.ts";
-import { CurrentDecodeState, CurrentEncodeState, withXmlDecodeState } from "./context.ts";
+import {
+  CurrentDecodeState,
+  CurrentEncodeState,
+  initializeXmlNamespaceScopes,
+  withXmlDecodeState,
+} from "./context.ts";
 import { delegateRequired } from "./delegate.ts";
 
 export interface FragmentNodeOptions extends FragmentParseOptions {
@@ -31,6 +36,7 @@ const makeFragmentNode = (
               state.positions = parsed.success.positions;
               state.root = parsed.success.fragment;
               state.sourceRoot = parsed.success.fragment;
+              initializeXmlNamespaceScopes(state, options.namespaces);
             }
             return Effect.succeed(parsed.success.fragment);
           }),
@@ -43,6 +49,14 @@ const makeFragmentNode = (
                 structured: state?.structured ?? new WeakSet(),
                 typed: state?.typed ?? new WeakSet(),
               };
+              const rawAttributes = state?.rawAttributes;
+              if (rawAttributes !== undefined) {
+                serializerOptions = { ...serializerOptions, rawAttributes };
+              }
+              const restNamespaces = state?.restNamespaces;
+              if (restNamespaces !== undefined) {
+                serializerOptions = { ...serializerOptions, restNamespaces };
+              }
             }
             const serialized = serializeFragment(fragment, serializerOptions);
             return Result.isFailure(serialized)

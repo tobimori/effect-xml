@@ -7,7 +7,12 @@ import * as SchemaTransformation from "effect/SchemaTransformation";
 import { Document as AstDocument } from "../ast/document.ts";
 import { parseDocument, type ParseOptions } from "../parser/parser.ts";
 import { serializeDocument, type SerializeOptions } from "../serializer/serializer.ts";
-import { CurrentDecodeState, CurrentEncodeState, withXmlDecodeState } from "./context.ts";
+import {
+  CurrentDecodeState,
+  CurrentEncodeState,
+  initializeXmlNamespaceScopes,
+  withXmlDecodeState,
+} from "./context.ts";
 import { delegateRequired } from "./delegate.ts";
 import { encodedString } from "./metadata.ts";
 
@@ -35,6 +40,7 @@ const makeDocumentNode = (
               state.positions = parsed.success.positions;
               state.root = parsed.success.document.root;
               state.sourceRoot = parsed.success.document.root;
+              initializeXmlNamespaceScopes(state);
             }
             return Effect.succeed(parsed.success.document);
           }),
@@ -47,6 +53,14 @@ const makeDocumentNode = (
                 structured: state?.structured ?? new WeakSet(),
                 typed: state?.typed ?? new WeakSet(),
               };
+              const rawAttributes = state?.rawAttributes;
+              if (rawAttributes !== undefined) {
+                serializerOptions = { ...serializerOptions, rawAttributes };
+              }
+              const restNamespaces = state?.restNamespaces;
+              if (restNamespaces !== undefined) {
+                serializerOptions = { ...serializerOptions, restNamespaces };
+              }
             }
             const serialized = serializeDocument(document, serializerOptions);
             return Result.isFailure(serialized)

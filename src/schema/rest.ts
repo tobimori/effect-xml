@@ -29,18 +29,31 @@ export interface Rest {
 }
 
 /** Materializes the full effective context only when actual Rest data is decoded. */
-export const snapshotRestNamespaces = (scope: XmlNamespaceScope): NamespaceContext => {
+export const snapshotRestNamespaces = (
+  scope: XmlNamespaceScope,
+  snapshots?: WeakMap<XmlNamespaceScope, NamespaceContext>,
+): NamespaceContext => {
+  const existing = snapshots?.get(scope);
+  if (existing !== undefined) return existing;
+
   const frames: Array<XmlNamespaceScope> = [];
   const seen = new Set<XmlNamespaceScope>();
+  let inherited: NamespaceContext | undefined;
   let current: XmlNamespaceScope | undefined = scope;
   while (current !== undefined) {
     if (seen.has(current)) throw new Error("XML namespace scope contains a cycle");
     seen.add(current);
+    inherited = snapshots?.get(current);
+    if (inherited !== undefined) break;
     frames.push(current);
     current = current.parent;
   }
 
-  const effective = new Map<string | undefined, string>([["xml", xmlNamespace]]);
+  const effective = new Map<string | undefined, string>(
+    inherited === undefined
+      ? [["xml", xmlNamespace]]
+      : inherited.bindings.map((binding) => [binding.prefix, binding.namespaceUri]),
+  );
   for (let index = frames.length - 1; index >= 0; index--) {
     for (const binding of frames[index]!.bindings) {
       if (binding.prefix === "xml") continue;
@@ -48,13 +61,15 @@ export const snapshotRestNamespaces = (scope: XmlNamespaceScope): NamespaceConte
       if (binding.namespaceUri !== "") effective.set(binding.prefix, binding.namespaceUri);
     }
   }
-  return new NamespaceContext({
+  const snapshot = new NamespaceContext({
     bindings: [...effective].map(([prefix, namespaceUri]) =>
       prefix === undefined
         ? new NamespaceBinding({ namespaceUri })
         : new NamespaceBinding({ prefix, namespaceUri }),
     ),
   });
+  snapshots?.set(scope, snapshot);
+  return snapshot;
 };
 
 const RestFields = Schema.Struct({

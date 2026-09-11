@@ -5,6 +5,7 @@ import * as SchemaAST from "effect/SchemaAST";
 import type { Attribute } from "../ast/attribute.ts";
 import type { Child, Element } from "../ast/element.ts";
 import type { CodecName } from "./codec-name.ts";
+import type { Rest } from "./rest.ts";
 
 const PlacementAnnotation = "effect-xml/placement";
 
@@ -50,6 +51,10 @@ export interface SuspendPlacement {
   readonly resolve: () => Placement | undefined;
 }
 
+export interface RestPlacement {
+  readonly kind: "rest";
+}
+
 export type ConcreteChildPlacement =
   | ElementPlacement
   | TextPlacement
@@ -74,6 +79,7 @@ export type Placement =
   | SingleChildPlacement
   | ArrayPlacement
   | TuplePlacement
+  | RestPlacement
   | { readonly kind: "struct"; readonly structured: boolean }
   | { readonly kind: "document" };
 
@@ -84,7 +90,7 @@ export interface ElementContent {
 }
 
 export type Encodes<A> = Schema.Constraint & { readonly Encoded: A };
-export type StructField = Encodes<Attribute | Child | ReadonlyArray<Child> | undefined>;
+export type StructField = Encodes<Attribute | Child | ReadonlyArray<Child> | Rest | undefined>;
 export type ArrayItem = Encodes<Child>;
 export type TupleItem = Encodes<Child>;
 export type UnionMember = Encodes<Child>;
@@ -127,6 +133,7 @@ const annotationPlacement = (ast: SchemaAST.AST): Placement | undefined => {
     value.kind !== "tuple" &&
     value.kind !== "union" &&
     value.kind !== "suspend" &&
+    value.kind !== "rest" &&
     value.kind !== "struct" &&
     value.kind !== "document"
   ) {

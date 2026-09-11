@@ -10,8 +10,9 @@ import type { Node } from "../ast/node.ts";
 import type { NamespaceContext } from "../namespace/context.ts";
 import { xmlNamespace } from "../namespace/validation.ts";
 import type { ResolvedCodecName } from "./codec-name.ts";
-import type { PlacementToken } from "./metadata.ts";
+import type { ElementContent, PlacementToken } from "./metadata.ts";
 import { associateSource, sourceForIssue, type XmlLocation } from "./provenance.ts";
+import type { Rest } from "./rest.ts";
 
 export interface PlacementBindingsState {
   readonly parent?: PlacementBindingsState;
@@ -63,6 +64,7 @@ export interface DecodeState {
   projectionAliases?: WeakMap<Element, Element>;
   /** Element scopes are registered lazily as typed traversal reaches each element. */
   namespaceScopes?: WeakMap<Element, XmlNamespaceScope>;
+  namespaceSnapshots?: WeakMap<XmlNamespaceScope, NamespaceContext>;
   namespaceRoot?: XmlNamespaceScope;
   root?: DecodeRoot;
   sourceRoot?: Node;
@@ -91,6 +93,7 @@ export const initializeXmlNamespaceScopes = (
   if (state !== undefined) {
     state.namespaceRoot = root;
     state.namespaceScopes ??= new WeakMap();
+    state.namespaceSnapshots ??= new WeakMap();
   }
   return root;
 };
@@ -115,6 +118,39 @@ export const registerXmlNamespaceScope = (
 /** Returns an element's already registered linked namespace scope. */
 export const xmlNamespaceScopeFor = (state: DecodeState | undefined, element: Element) =>
   state?.namespaceScopes?.get(element);
+
+export interface XmlElementDecodeContext {
+  readonly scope: XmlNamespaceScope;
+  readonly preservesSpace: boolean;
+}
+
+/** The occurrence-local parent context used while decoding one typed element subtree. */
+export const CurrentXmlElementDecodeContext = Context.Reference<
+  XmlElementDecodeContext | undefined
+>("effect-xml/schema/CurrentXmlElementDecodeContext", { defaultValue: () => undefined });
+
+/** Enters one element occurrence without using node identity as its context cache key. */
+export const enterXmlElementDecodeContext = (
+  state: DecodeState | undefined,
+  element: Element,
+  parent?: XmlElementDecodeContext,
+): XmlElementDecodeContext => {
+  const scope = enterXmlNamespaceScope(
+    parent?.scope ?? state?.namespaceRoot ?? rootXmlNamespaceScope(),
+    element,
+  );
+  const control = element.attributes.find(isXmlSpaceAttribute);
+  let preservesSpace = parent?.preservesSpace ?? false;
+  if (control?.value === "preserve") preservesSpace = true;
+  else if (control?.value === "default") preservesSpace = false;
+
+  if (state !== undefined) {
+    state.namespaceScopes ??= new WeakMap();
+    state.namespaceScopes.set(element, scope);
+    state.preservesSpace.set(element, preservesSpace);
+  }
+  return { scope, preservesSpace };
+};
 
 const isNodeArray = (value: Node | ReadonlyArray<Node>): value is ReadonlyArray<Node> =>
   globalThis.Array.isArray(value);
@@ -173,6 +209,7 @@ export const withXmlDecodeState = <A, R>(
       preservesSpace: new WeakMap(),
       projectionAliases: new WeakMap(),
       namespaceScopes: new WeakMap(),
+      namespaceSnapshots: new WeakMap(),
       namespaceRoot: rootXmlNamespaceScope(),
     };
     return Effect.provideService(
@@ -242,6 +279,8 @@ export interface EncodeState {
   rawAttributes?: WeakSet<Attribute>;
   /** Effective Rest namespace snapshots restored before typed name allocation. */
   restNamespaces?: WeakMap<Element, NamespaceContext>;
+  /** Rest values awaiting attachment to the final typed owner element. */
+  encodedRest?: WeakMap<ElementContent, Rest>;
 }
 
 /** Marks raw Rest attributes without requiring every existing encode-state caller to initialize it. */
@@ -263,6 +302,29 @@ export const registerRestNamespaceSnapshot = (
   if (state === undefined) return;
   state.restNamespaces ??= new WeakMap();
   state.restNamespaces.set(element, namespaces);
+};
+
+/** Carries Rest metadata across the ordinary Struct-to-Element encoded parent value. */
+export const registerEncodedRest = (
+  state: EncodeState | undefined,
+  content: ElementContent,
+  rest: Rest,
+) => {
+  if (state === undefined) return;
+  state.encodedRest ??= new WeakMap();
+  state.encodedRest.set(content, rest);
+};
+
+/** Attaches pending Rest writer metadata to its final typed owner. */
+export const attachEncodedRest = (
+  state: EncodeState | undefined,
+  content: ElementContent,
+  element: Element,
+) => {
+  const rest = state?.encodedRest?.get(content);
+  if (rest === undefined) return;
+  registerRawRestAttributes(state, rest.attributes);
+  registerRestNamespaceSnapshot(state, element, rest.namespaces);
 };
 
 export const CurrentEncodeState = Context.Reference<EncodeState | undefined>(

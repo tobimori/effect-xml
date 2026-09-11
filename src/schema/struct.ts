@@ -15,9 +15,11 @@ import {
   CurrentDecodeState,
   CurrentEncodeState,
   CurrentStructDecodeIssues,
+  CurrentXmlElementDecodeContext,
   isXmlSpaceAttribute,
   PlacementBindings,
-  registerXmlSpace,
+  registerEncodedRest,
+  rootXmlNamespaceScope,
   type ProjectedNode,
   type StructDecodeIssuesState,
 } from "./context.ts";
@@ -34,19 +36,22 @@ import {
   getPlacement,
   isElementContent,
   resolveChildPlacements,
+  resolveSuspendedPlacement,
   type ArrayPlacement,
   type AttributePlacement,
   type ConcreteChildPlacement,
   type ElementContent,
   type ElementPlacement,
   type PlacementToken,
+  type RestPlacement,
   type SingleChildPlacement,
   type StructField,
 } from "./metadata.ts";
 import { canonicalizeOrderedChildren, validateOrderedChildren } from "./ordered-content.ts";
 import { guardProduct } from "./path-guard.ts";
+import { snapshotRestNamespaces, type Rest } from "./rest.ts";
 
-type FieldPlacement = AttributePlacement | SingleChildPlacement | ArrayPlacement;
+type FieldPlacement = AttributePlacement | SingleChildPlacement | ArrayPlacement | RestPlacement;
 
 interface FieldSpec {
   readonly key: PropertyKey;
@@ -72,13 +77,37 @@ const resolveAttributeName = (placement: AttributePlacement, key: PropertyKey) =
   return localName === undefined ? undefined : withLocalName(placement.name, localName);
 };
 
+const resolvedFieldPlacement = (spec: FieldSpec, resolveSuspended: boolean) => {
+  const placement =
+    resolveSuspended && spec.placement.kind === "suspend"
+      ? resolveSuspendedPlacement(spec.placement)
+      : spec.placement;
+  if (
+    placement === undefined ||
+    placement.kind === "struct" ||
+    placement.kind === "document" ||
+    placement.kind === "tuple"
+  ) {
+    return undefined;
+  }
+  return placement;
+};
+
 const resolveFieldChildren = (spec: FieldSpec, resolveSuspended: boolean) => {
   const placements: Array<OwnedChildPlacement> = [];
   let error: string | undefined;
-  if (spec.placement.kind === "attribute") {
+  const fieldPlacement = resolvedFieldPlacement(spec, resolveSuspended);
+  if (fieldPlacement === undefined) {
+    return {
+      placements,
+      complete: false,
+      error: `Xml.Struct field ${String(spec.key)} has unresolved XML placement`,
+    };
+  }
+  if (fieldPlacement.kind === "attribute" || fieldPlacement.kind === "rest") {
     return { placements, complete: true, error };
   }
-  const childPlacement = spec.placement.kind === "array" ? spec.placement.item : spec.placement;
+  const childPlacement = fieldPlacement.kind === "array" ? fieldPlacement.item : fieldPlacement;
   const resolution = resolveChildPlacements(childPlacement, resolveSuspended);
 
   for (const placement of resolution.placements) {
@@ -127,10 +156,24 @@ const ownershipDescription = (placement: OwnedChildPlacement) => {
 
 const ownershipConflict = (specs: ReadonlyArray<FieldSpec>, resolveSuspended: boolean) => {
   const ownership = new Map<string, { readonly key: PropertyKey; readonly description: string }>();
+  let restOwner: PropertyKey | undefined;
 
   for (const spec of specs) {
-    if (spec.placement.kind === "attribute") {
-      const name = resolveAttributeName(spec.placement, spec.key);
+    const fieldPlacement = resolvedFieldPlacement(spec, resolveSuspended);
+    if (fieldPlacement === undefined) {
+      if (resolveSuspended)
+        return `Xml.Struct field ${String(spec.key)} has unresolved XML placement`;
+      continue;
+    }
+    if (fieldPlacement.kind === "rest") {
+      if (restOwner !== undefined) {
+        return `Xml.Struct fields ${String(restOwner)} and ${String(spec.key)} both consume remaining XML content`;
+      }
+      restOwner = spec.key;
+      continue;
+    }
+    if (fieldPlacement.kind === "attribute") {
+      const name = resolveAttributeName(fieldPlacement, spec.key);
       if (name === undefined) {
         return `Xml.Struct cannot infer an XML name from symbol field ${String(spec.key)}`;
       }
@@ -192,11 +235,12 @@ const provideFieldNames = <Value, Error, Services>(
   effect: Effect.Effect<Value, Error, Services>,
 ) =>
   Effect.suspend(() => {
-    if (spec.placement.kind === "attribute") {
-      const name = resolveAttributeName(spec.placement, spec.key);
-      return name === undefined || spec.placement.name.localName !== undefined
+    const fieldPlacement = resolvedFieldPlacement(spec, true);
+    if (fieldPlacement?.kind === "attribute") {
+      const name = resolveAttributeName(fieldPlacement, spec.key);
+      return name === undefined || fieldPlacement.name.localName !== undefined
         ? effect
-        : provideBindings([{ token: spec.placement.token, name }], effect);
+        : provideBindings([{ token: fieldPlacement.token, name }], effect);
     }
     const resolved = resolveFieldChildren(spec, true);
     const bindings: Array<{ readonly token: PlacementToken; readonly name: ResolvedCodecName }> =
@@ -239,8 +283,9 @@ const duplicateIssue = (
     new SchemaIssue.InvalidValue({ message: `Duplicate known ${description}` }, input, options),
   );
 
-const optionalBareArrayIssue = <Input>(
+const optionalBarePlacementIssue = <Input>(
   key: PropertyKey,
+  kind: "array" | "rest",
   input: Input,
   options: SchemaAST.ParseOptions,
 ) =>
@@ -249,7 +294,9 @@ const optionalBareArrayIssue = <Input>(
     new SchemaIssue.InvalidValue(
       {
         message:
-          "An optional bare Xml.Array placement is ambiguous; use a required Xml.Array for zero-or-more, or an optional Xml.Element(Xml.Array(...)) wrapper when absence and an empty array must remain distinct",
+          kind === "array"
+            ? "An optional bare Xml.Array placement is ambiguous; use a required Xml.Array for zero-or-more, or an optional Xml.Element(Xml.Array(...)) wrapper when absence and an empty array must remain distinct"
+            : "An optional bare Xml.Rest placement is ambiguous because every owning element has a Rest value; use a required Xml.Rest field",
       },
       input,
       options,
@@ -301,15 +348,20 @@ export const Struct = <const Fields extends Readonly<Record<PropertyKey, StructF
   const conflict = ownershipConflict(specs, false);
   if (conflict !== undefined) throw new Error(conflict);
 
-  const optionalBareArraySpecs = specs.filter(
-    (spec) => spec.optional && spec.placement.kind === "array",
-  );
+  const optionalBareSpecs = () =>
+    specs.flatMap((spec) => {
+      if (!spec.optional) return [];
+      const placement = resolvedFieldPlacement(spec, true);
+      return placement?.kind === "array" || placement?.kind === "rest"
+        ? [{ spec, kind: placement.kind }]
+        : [];
+    });
   const structured = specs.every((spec) => {
-    if (spec.placement.kind === "attribute") return true;
+    const placement = resolvedFieldPlacement(spec, false);
+    if (placement?.kind === "attribute") return true;
+    if (placement?.kind === "rest") return false;
     const resolved = resolveFieldChildren(spec, false);
-    return (
-      resolved.complete && resolved.placements.every((placement) => placement.kind === "element")
-    );
+    return resolved.complete && resolved.placements.every((child) => child.kind === "element");
   });
   const fieldSchema = guardProduct(Schema.Struct(boundFields));
   const raw = encoded(isElementContent, { kind: "struct", structured });
@@ -318,11 +370,12 @@ export const Struct = <const Fields extends Readonly<Record<PropertyKey, StructF
       fieldSchema,
       SchemaTransformation.transformEffect({
         decode: (content, options) => {
-          if (optionalBareArraySpecs.length > 0) {
+          const ambiguous = optionalBareSpecs();
+          if (ambiguous.length > 0) {
             return failIssues(
               fieldSchema.ast,
-              optionalBareArraySpecs.map((spec) =>
-                optionalBareArrayIssue(spec.key, content, options),
+              ambiguous.map(({ spec, kind }) =>
+                optionalBarePlacementIssue(spec.key, kind, content, options),
               ),
               content,
               options,
@@ -335,137 +388,165 @@ export const Struct = <const Fields extends Readonly<Record<PropertyKey, StructF
             );
           }
           return Effect.flatMap(CurrentDecodeState, (state) =>
-            Effect.flatMap(CurrentStructDecodeIssues, (scope) => {
-              const output: Record<
-                PropertyKey,
-                Attribute | Child | ReadonlyArray<Child> | undefined
-              > = Object.create(null);
-              const contentChildren = canonicalizeOrderedChildren(content.children, state);
-              const projected = new Map<PropertyKey, ProjectedNode>();
-              const attributes = new Set<number>();
-              const children = new Set<number>();
-              const preservesSpace =
-                content.element === undefined ? false : registerXmlSpace(state, content.element);
+            Effect.flatMap(CurrentXmlElementDecodeContext, (elementContext) =>
+              Effect.flatMap(CurrentStructDecodeIssues, (scope) => {
+                const output: Record<
+                  PropertyKey,
+                  Attribute | Child | ReadonlyArray<Child> | Rest | undefined
+                > = Object.create(null);
+                const restSpec = specs.find(
+                  (spec) => resolvedFieldPlacement(spec, true)?.kind === "rest",
+                );
+                const contentChildren = canonicalizeOrderedChildren(content.children, state);
+                const projected = new Map<PropertyKey, ProjectedNode>();
+                const attributes = new Set<number>();
+                const claimedCanonicalChildren = new Set<number>();
+                const claimedOriginalChildren =
+                  restSpec === undefined ? undefined : new Set<number>();
+                const preservesSpace = elementContext?.preservesSpace ?? false;
 
-              for (let index = 0; index < content.attributes.length; index++) {
-                const attribute = content.attributes[index];
-                if (attribute !== undefined && isXmlSpaceAttribute(attribute)) {
-                  attributes.add(index);
+                for (let index = 0; index < content.attributes.length; index++) {
+                  const attribute = content.attributes[index];
+                  if (attribute !== undefined && isXmlSpaceAttribute(attribute)) {
+                    attributes.add(index);
+                  }
                 }
-              }
 
-              for (const spec of specs) {
-                if (spec.placement.kind === "attribute") {
-                  const name = resolveAttributeName(spec.placement, spec.key)!;
+                for (const spec of specs) {
+                  const fieldPlacement = resolvedFieldPlacement(spec, true)!;
+                  if (fieldPlacement.kind === "rest") continue;
+                  if (fieldPlacement.kind === "attribute") {
+                    const name = resolveAttributeName(fieldPlacement, spec.key)!;
+                    const matches: Array<number> = [];
+                    for (let index = 0; index < content.attributes.length; index++) {
+                      const attribute = content.attributes[index];
+                      if (attribute !== undefined && hasExpandedName(attribute.name, name)) {
+                        matches.push(index);
+                      }
+                    }
+                    const first = matches[0];
+                    if (first !== undefined) {
+                      const attribute = content.attributes[first]!;
+                      output[spec.key] = attribute;
+                      projected.set(spec.key, attribute);
+                      for (const index of matches) attributes.add(index);
+                    }
+                    if (matches.length > 1) {
+                      const issue = new SchemaIssue.Pointer(
+                        [spec.key],
+                        new SchemaIssue.InvalidValue(
+                          {
+                            message: `Duplicate known XML attribute ${JSON.stringify(codecNameLabel(name))}`,
+                          },
+                          matches.map((index) => content.attributes[index]),
+                          options,
+                        ),
+                      );
+                      scope?.issues.push(issue);
+                      if (scope !== undefined) scope.input = content;
+                    }
+                    continue;
+                  }
+
+                  const resolved = resolveFieldChildren(spec, true);
+                  const matchesPlacement = (child: Child) =>
+                    resolved.placements.some((placement) => matchesChild(child, placement));
                   const matches: Array<number> = [];
-                  for (let index = 0; index < content.attributes.length; index++) {
-                    const attribute = content.attributes[index];
-                    if (attribute !== undefined && hasExpandedName(attribute.name, name)) {
-                      matches.push(index);
+                  for (let index = 0; index < contentChildren.length; index++) {
+                    const child = contentChildren[index];
+                    if (child !== undefined && matchesPlacement(child)) matches.push(index);
+                  }
+                  if (claimedOriginalChildren !== undefined) {
+                    for (let index = 0; index < content.children.length; index++) {
+                      const child = content.children[index];
+                      if (child !== undefined && matchesPlacement(child)) {
+                        claimedOriginalChildren.add(index);
+                      }
                     }
                   }
-                  const first = matches[0];
-                  if (first !== undefined) {
-                    const attribute = content.attributes[first]!;
-                    output[spec.key] = attribute;
-                    projected.set(spec.key, attribute);
-                    for (const index of matches) attributes.add(index);
-                  }
-                  if (matches.length > 1) {
-                    const issue = new SchemaIssue.Pointer(
-                      [spec.key],
-                      new SchemaIssue.InvalidValue(
-                        {
-                          message: `Duplicate known XML attribute ${JSON.stringify(codecNameLabel(name))}`,
-                        },
-                        matches.map((index) => content.attributes[index]),
+
+                  if (fieldPlacement.kind === "array") {
+                    const values = canonicalizeOrderedChildren(
+                      matches.map((index) => contentChildren[index]!),
+                      state,
+                    );
+                    output[spec.key] = values;
+                    projected.set(spec.key, values);
+                    for (const index of matches) claimedCanonicalChildren.add(index);
+                  } else {
+                    const first = matches[0];
+                    if (first !== undefined) {
+                      const child = contentChildren[first]!;
+                      output[spec.key] = child;
+                      projected.set(spec.key, child);
+                      for (const index of matches) claimedCanonicalChildren.add(index);
+                    }
+                    if (matches.length > 1) {
+                      const description =
+                        resolved.placements.length === 1
+                          ? ownershipDescription(resolved.placements[0]!)
+                          : "XML child content";
+                      const issue = duplicateIssue(
+                        spec.key,
+                        description,
+                        matches.map((index) => contentChildren[index]),
                         options,
-                      ),
-                    );
-                    scope?.issues.push(issue);
-                    if (scope !== undefined) scope.input = content;
-                  }
-                  continue;
-                }
-
-                const resolved = resolveFieldChildren(spec, true);
-                const matches: Array<number> = [];
-                for (let index = 0; index < contentChildren.length; index++) {
-                  const child = contentChildren[index];
-                  if (
-                    child !== undefined &&
-                    resolved.placements.some((placement) => matchesChild(child, placement))
-                  ) {
-                    matches.push(index);
+                      );
+                      scope?.issues.push(issue);
+                      if (scope !== undefined) scope.input = content;
+                    }
                   }
                 }
 
-                if (spec.placement.kind === "array") {
-                  const values: Array<Child> = [];
-                  for (const index of matches) {
-                    const child = contentChildren[index]!;
-                    values.push(child);
-                    if (isElement(child)) registerXmlSpace(state, child, preservesSpace);
-                  }
-                  output[spec.key] = values;
-                  projected.set(spec.key, values);
-                  for (const index of matches) children.add(index);
+                if (restSpec !== undefined) {
+                  const restAttributes = content.attributes.filter(
+                    (_, index) => !attributes.has(index),
+                  );
+                  const restChildren = content.children.filter(
+                    (_, index) => !claimedOriginalChildren!.has(index),
+                  );
+                  output[restSpec.key] = {
+                    attributes: restAttributes,
+                    children: restChildren,
+                    namespaces: snapshotRestNamespaces(
+                      elementContext?.scope ?? state?.namespaceRoot ?? rootXmlNamespaceScope(),
+                      state?.namespaceSnapshots,
+                    ),
+                  };
                 } else {
-                  const first = matches[0];
-                  if (first !== undefined) {
-                    const child = contentChildren[first]!;
-                    output[spec.key] = child;
-                    projected.set(spec.key, child);
-                    if (isElement(child)) registerXmlSpace(state, child, preservesSpace);
-                    for (const index of matches) children.add(index);
+                  for (let index = 0; index < content.attributes.length; index++) {
+                    if (!attributes.has(index)) {
+                      const attribute = content.attributes[index]!;
+                      output[Symbol(`XML attribute ${attribute.name.qualifiedName}`)] = attribute;
+                    }
                   }
-                  if (matches.length > 1) {
-                    const description =
-                      resolved.placements.length === 1
-                        ? ownershipDescription(resolved.placements[0]!)
-                        : "XML child content";
-                    const issue = duplicateIssue(
-                      spec.key,
-                      description,
-                      matches.map((index) => contentChildren[index]),
-                      options,
-                    );
-                    scope?.issues.push(issue);
-                    if (scope !== undefined) scope.input = content;
+                  for (let index = 0; index < contentChildren.length; index++) {
+                    if (claimedCanonicalChildren.has(index)) continue;
+                    const child = contentChildren[index]!;
+                    if (isText(child) && !preservesSpace && isXmlWhitespace(child.value)) continue;
+                    let description = "XML content";
+                    if (isElement(child)) description = child.name.qualifiedName;
+                    else if (isText(child)) description = "Text";
+                    output[Symbol(`XML child ${description} ${index}`)] = child;
                   }
                 }
-              }
 
-              for (let index = 0; index < content.attributes.length; index++) {
-                if (!attributes.has(index)) {
-                  const attribute = content.attributes[index]!;
-                  output[Symbol(`XML attribute ${attribute.name.qualifiedName}`)] = attribute;
+                if (state !== undefined && content.element !== undefined) {
+                  state.projections.set(content.element, projected);
                 }
-              }
-              for (let index = 0; index < contentChildren.length; index++) {
-                if (children.has(index)) continue;
-                const child = contentChildren[index]!;
-                if (isText(child) && !preservesSpace && isXmlWhitespace(child.value)) continue;
-                let description = "XML content";
-                if (isElement(child)) description = child.name.qualifiedName;
-                else if (isText(child)) description = "Text";
-                output[Symbol(`XML child ${description} ${index}`)] = child;
-              }
-
-              if (state !== undefined && content.element !== undefined) {
-                state.projections.set(content.element, projected);
-              }
-              // Symbol keys are intentional unknown properties for Struct excess handling
-              return Effect.succeed(output as Schema.Struct.Encoded<typeof boundFields>);
-            }),
+                // Symbol keys are intentional unknown properties for Struct excess handling
+                return Effect.succeed(output as Schema.Struct.Encoded<typeof boundFields>);
+              }),
+            ),
           );
         },
         encode: (values, options) => {
-          if (optionalBareArraySpecs.length > 0) {
+          const ambiguous = optionalBareSpecs();
+          if (ambiguous.length > 0) {
             return failIssues(
               fieldSchema.ast,
-              optionalBareArraySpecs.map((spec) =>
-                optionalBareArrayIssue(spec.key, values, options),
+              ambiguous.map(({ spec, kind }) =>
+                optionalBarePlacementIssue(spec.key, kind, values, options),
               ),
               values,
               options,
@@ -481,11 +562,13 @@ export const Struct = <const Fields extends Readonly<Record<PropertyKey, StructF
             const attributes: Array<{ readonly key: PropertyKey; readonly value: Attribute }> = [];
             const children: Array<Child> = [];
             const issues: Array<SchemaIssue.Issue> = [];
+            let rest: { readonly key: PropertyKey; readonly value: Rest } | undefined;
             const encodedValues = values as {
               readonly [Key in keyof Fields]?: Fields[Key]["Encoded"];
             };
 
             for (const spec of specs) {
+              const fieldPlacement = resolvedFieldPlacement(spec, true)!;
               const value = encodedValues[spec.key as keyof Fields];
               if (value === undefined) {
                 if (!spec.optional) {
@@ -502,7 +585,9 @@ export const Struct = <const Fields extends Readonly<Record<PropertyKey, StructF
                 }
                 continue;
               }
-              if (spec.placement.kind === "attribute") {
+              if (fieldPlacement.kind === "rest") {
+                rest = { key: spec.key, value: value as Rest };
+              } else if (fieldPlacement.kind === "attribute") {
                 if (isAttribute(value)) attributes.push({ key: spec.key, value });
                 else {
                   issues.push(
@@ -516,7 +601,7 @@ export const Struct = <const Fields extends Readonly<Record<PropertyKey, StructF
                     ),
                   );
                 }
-              } else if (spec.placement.kind === "array") {
+              } else if (fieldPlacement.kind === "array") {
                 if (globalThis.Array.isArray(value) && value.every(isChild)) {
                   for (const child of value) children.push(child);
                 } else {
@@ -547,6 +632,71 @@ export const Struct = <const Fields extends Readonly<Record<PropertyKey, StructF
               }
             }
 
+            if (rest !== undefined) {
+              const modeledAttributeNames = new Set(
+                specs.flatMap((spec) => {
+                  const placement = resolvedFieldPlacement(spec, true);
+                  if (placement?.kind !== "attribute") return [];
+                  const name = resolveAttributeName(placement, spec.key);
+                  return name === undefined
+                    ? []
+                    : [JSON.stringify([name.namespaceUri ?? null, name.localName])];
+                }),
+              );
+              const expandedAttributes = new Set<string>();
+              for (const { value } of attributes) {
+                expandedAttributes.add(
+                  JSON.stringify([value.name.namespaceUri ?? null, value.name.localName]),
+                );
+              }
+              for (let index = 0; index < rest.value.attributes.length; index++) {
+                const attribute = rest.value.attributes[index]!;
+                const expandedName = JSON.stringify([
+                  attribute.name.namespaceUri ?? null,
+                  attribute.name.localName,
+                ]);
+                let message: string | undefined;
+                if (isXmlSpaceAttribute(attribute)) {
+                  message = "Xml.Rest cannot encode the xml:space control attribute";
+                } else if (modeledAttributeNames.has(expandedName)) {
+                  message = `Raw Rest attribute conflicts with modeled XML attribute ${JSON.stringify(attribute.name.qualifiedName)}`;
+                } else if (expandedAttributes.has(expandedName)) {
+                  message = `Duplicate raw XML attribute ${JSON.stringify(attribute.name.qualifiedName)}`;
+                }
+                if (message !== undefined) {
+                  issues.push(
+                    new SchemaIssue.Pointer(
+                      [rest.key, "attributes", index],
+                      new SchemaIssue.InvalidValue({ message }, attribute, options),
+                    ),
+                  );
+                }
+                expandedAttributes.add(expandedName);
+              }
+
+              const knownPlacements = specs.flatMap((spec) => {
+                const placement = resolvedFieldPlacement(spec, true);
+                return placement?.kind === "attribute" || placement?.kind === "rest"
+                  ? []
+                  : resolveFieldChildren(spec, true).placements;
+              });
+              for (let index = 0; index < rest.value.children.length; index++) {
+                const child = rest.value.children[index]!;
+                if (knownPlacements.some((placement) => matchesChild(child, placement))) {
+                  issues.push(
+                    new SchemaIssue.Pointer(
+                      [rest.key, "children", index],
+                      new SchemaIssue.InvalidValue(
+                        { message: "Raw Rest child conflicts with a modeled XML child placement" },
+                        child,
+                        options,
+                      ),
+                    ),
+                  );
+                }
+              }
+            }
+
             if (issues.length > 0) return failIssues(fieldSchema.ast, issues, values, options);
             if (state?.sortKeys !== false) {
               attributes.sort((left, right) => {
@@ -559,10 +709,17 @@ export const Struct = <const Fields extends Readonly<Record<PropertyKey, StructF
             }
             return Effect.map(
               validateOrderedChildren(children, fieldSchema.ast, options),
-              (validChildren) => ({
-                attributes: attributes.map(({ value }) => value),
-                children: validChildren,
-              }),
+              (validChildren) => {
+                const output = {
+                  attributes: [
+                    ...attributes.map(({ value }) => value),
+                    ...(rest?.value.attributes ?? []),
+                  ],
+                  children: [...validChildren, ...(rest?.value.children ?? [])],
+                };
+                if (rest !== undefined) registerEncodedRest(state, output, rest.value);
+                return output;
+              },
             );
           });
         },

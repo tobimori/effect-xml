@@ -13,11 +13,13 @@ import { Name as AstName } from "../ast/name.ts";
 import { Text, isCData, isText } from "../ast/text.ts";
 import { isName, type Name } from "../namespace/name.ts";
 import {
+  attachEncodedRest,
   CurrentDecodeState,
   CurrentEncodeState,
+  CurrentXmlElementDecodeContext,
+  enterXmlElementDecodeContext,
   isXmlSpaceAttribute,
   PlacementBindings,
-  registerXmlSpace,
   resolvePlacementName,
   type DecodeState,
 } from "./context.ts";
@@ -36,6 +38,7 @@ import {
   acceptsEncodedUndefined,
   encoded,
   getPlacement,
+  isElementContent,
   isSingleChildPlacement,
   resolveChildPlacements,
   resolveSuspendedPlacement,
@@ -191,14 +194,11 @@ const registerOrderedChildren = (
   state: DecodeState | undefined,
   element: ElementNode,
   children: ReadonlyArray<Child>,
-  preservesSpace: boolean,
 ) => {
   if (state === undefined) return;
   const projected = new Map<PropertyKey, Child>();
   for (let index = 0; index < children.length; index++) {
-    const child = children[index]!;
-    projected.set(index, child);
-    if (isElement(child)) registerXmlSpace(state, child, preservesSpace);
+    projected.set(index, children[index]!);
   }
   state.projections.set(element, projected);
 };
@@ -234,8 +234,8 @@ const makeElementCodec = <S extends Schema.Constraint>(
           Effect.flatMap(resolveName(explicitName, token), (name) =>
             Effect.andThen(
               checkName(element, name, options),
-              Effect.flatMap(CurrentDecodeState, (state) =>
-                decodeContent(element, options, raw.ast, registerXmlSpace(state, element)),
+              Effect.flatMap(CurrentXmlElementDecodeContext, (context) =>
+                decodeContent(element, options, raw.ast, context?.preservesSpace ?? false),
               ),
             ),
           ),
@@ -259,6 +259,7 @@ const makeElementCodec = <S extends Schema.Constraint>(
                     });
                     state?.typed.add(element);
                     if (structured) state?.structured.add(element);
+                    if (isElementContent(value)) attachEncodedRest(state, value, element);
                     return element;
                   }),
                 ),
@@ -290,13 +291,24 @@ const makeElementCodec = <S extends Schema.Constraint>(
       return guardParsePath(
         input,
         Effect.flatMap(CurrentDecodeState, (state) => {
-          if (state !== undefined) return accumulated;
-          const standaloneState: DecodeState = {
+          const activeState: DecodeState = state ?? {
             positions: new WeakMap(),
             projections: new WeakMap(),
             preservesSpace: new WeakMap(),
+            namespaceSnapshots: new WeakMap(),
           };
-          return Effect.provideService(accumulated, CurrentDecodeState, standaloneState);
+          const contextual = Effect.flatMap(CurrentXmlElementDecodeContext, (parent) =>
+            isElement(input)
+              ? Effect.provideService(
+                  accumulated,
+                  CurrentXmlElementDecodeContext,
+                  enterXmlElementDecodeContext(activeState, input, parent),
+                )
+              : accumulated,
+          );
+          return state === undefined
+            ? Effect.provideService(contextual, CurrentDecodeState, activeState)
+            : contextual;
         }),
         options,
       );
@@ -365,7 +377,7 @@ const makeElement = <S extends Schema.Constraint>(
       explicitName,
       content,
       false,
-      (element, options, ast, preservesSpace) =>
+      (element, options, ast) =>
         Effect.flatMap(CurrentDecodeState, (state) => {
           const children = canonicalizeOrderedChildren(element.children, state);
           if (placement.kind === "array" && options.onExcessProperty === "error") {
@@ -385,14 +397,14 @@ const makeElement = <S extends Schema.Constraint>(
                   deferElementIssues(ast, issues, element, options),
                 ),
                 () => {
-                  registerOrderedChildren(state, element, children, preservesSpace);
+                  registerOrderedChildren(state, element, children);
                   return Effect.succeed(children as S["Encoded"]);
                 },
               );
             }
           }
           return Effect.andThen(checkOrderedAttributes(element, options, ast, state), () => {
-            registerOrderedChildren(state, element, children, preservesSpace);
+            registerOrderedChildren(state, element, children);
             return Effect.succeed(children as S["Encoded"]);
           });
         }),
@@ -445,7 +457,7 @@ const makeElement = <S extends Schema.Constraint>(
       explicitName,
       content,
       false,
-      (element, options, ast, preservesSpace) => {
+      (element, options, ast) => {
         if (resolveSuspendedPlacement(placement)?.kind === "text") {
           return decodeSimpleText(element, options, ast) as Effect.Effect<
             S["Encoded"],
@@ -455,7 +467,7 @@ const makeElement = <S extends Schema.Constraint>(
         return Effect.flatMap(CurrentDecodeState, (state) =>
           Effect.andThen(checkOrderedAttributes(element, options, ast, state), () => {
             const children = canonicalizeOrderedChildren(element.children, state);
-            registerOrderedChildren(state, element, children, preservesSpace);
+            registerOrderedChildren(state, element, children);
             if (children.length === 0 && optional) {
               return Effect.succeed(undefined as S["Encoded"]);
             }
