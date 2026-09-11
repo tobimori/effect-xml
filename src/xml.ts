@@ -17,6 +17,7 @@ export { Element } from "./schema/element.ts";
 export { Fragment, type FragmentOptions } from "./schema/fragment.ts";
 export { FragmentNode, type FragmentNodeOptions } from "./schema/fragment-node.ts";
 export { formatError } from "./schema/format-error.ts";
+export { fromSchema, type FromSchemaOptions } from "./schema/from-schema.ts";
 export { ProcessingInstruction } from "./schema/processing-instruction.ts";
 export { Struct } from "./schema/struct.ts";
 export { suspend, type Suspend } from "./schema/suspend.ts";
