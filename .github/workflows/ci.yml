@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Check and package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up pnpm and Node.js
+        uses: pnpm/setup@v2
+        with:
+          runtime: node@24
+          cache: true
+          install: false
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check formatting, lint, and types
+        run: vp check
+
+      - name: Build package
+        run: vp pack
+
+      - name: Lint package
+        run: vp run check:package
+
+      - name: Create package tarball
+        run: pnpm pack --pack-destination package-artifacts
+
+      - name: Upload package tarball
+        uses: actions/upload-artifact@v7
+        with:
+          name: npm-package
+          path: package-artifacts/*.tgz
+          if-no-files-found: error
