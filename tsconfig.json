@@ -1,5 +1,6 @@
 {
   "$schema": "./node_modules/@effect/tsgo/schema.json",
+  "exclude": [".playground", ".prototype", ".repos", "node_modules", "dist"],
   "compilerOptions": {
     "target": "esnext",
     "lib": ["es2023"],

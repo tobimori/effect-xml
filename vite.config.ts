@@ -11,6 +11,8 @@ const ignoredPaths = [
   ".gemini/**",
   ".opencode/**",
   ".pi/**",
+  ".playground/**",
+  ".prototype/**",
   ".repos/**",
   ".roo/**",
   ".windsurf/**",
