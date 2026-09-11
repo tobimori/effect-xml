@@ -1,6 +1,4 @@
-// @ts-expect-error The build config runs in Node while the package excludes Node ambient types
 import { Buffer } from "node:buffer";
-// @ts-expect-error The build config runs in Node while the package excludes Node ambient types
 import { dirname, relative, resolve } from "node:path";
 import { defineConfig, normalizePath, transformWithOxc } from "vite-plus";
 
@@ -25,10 +23,18 @@ const ignoredPaths = [
   ".roo/**",
   ".windsurf/**",
   "dist/**",
+  "test/fixtures/w3c/**",
   "tools/oxlint/**",
 ];
 
 export default defineConfig({
+  test: {
+    name: "unit",
+    include: ["test/**/*.test.ts"],
+    benchmark: {
+      include: ["bench/**/*.bench.ts"],
+    },
+  },
   pack: {
     entry: facadeEntries,
     platform: "neutral",

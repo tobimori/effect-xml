@@ -27,6 +27,7 @@
     "access": "public"
   },
   "scripts": {
+    "bench": "vp exec vitest bench --run --experimental.viteModuleRunner=false --reporter=default",
     "build": "vp pack",
     "check": "vp check",
     "check:package": "publint",
@@ -37,6 +38,7 @@
     "prepublishOnly": "vp run build",
     "prepare": "effect-tsgo patch --typescript --oxlint",
     "release": "vp run build && changeset publish",
+    "test": "vp exec vitest run",
     "version-packages": "changeset version"
   },
   "dependencies": {
@@ -45,13 +47,17 @@
   "devDependencies": {
     "@changesets/cli": "3.0.1",
     "@effect/tsgo": "0.38.0",
+    "@effect/vitest": "4.0.0-rc.113",
     "@oxlint/plugins": "1.80.0",
+    "@types/node": "24.13.3",
+    "@vitest/browser-preview": "5.0.0",
     "oxlint": "1.80.0",
     "oxlint-tsgolint": "7.0.2001",
     "publint": "0.3.24",
     "typescript": "7.0.2",
     "vite": "catalog:",
-    "vite-plus": "catalog:"
+    "vite-plus": "catalog:",
+    "vitest": "5.0.0"
   },
   "devEngines": {
     "packageManager": {
