@@ -1,0 +1,55 @@
+{
+  "name": "effect-xml",
+  "version": "0.0.0",
+  "description": "Effect Schema codecs for XML.",
+  "homepage": "https://github.com/tobimori/effect-xml#readme",
+  "bugs": {
+    "url": "https://github.com/tobimori/effect-xml/issues"
+  },
+  "license": "MIT",
+  "author": "Tobias Møritz <tobias@moeritz.io>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tobimori/effect-xml.git"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./dist/index.js",
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "vp pack",
+    "check": "vp check",
+    "dev": "vp pack --watch",
+    "fmt": "vp fmt",
+    "lint": "vp lint",
+    "prepublishOnly": "vp run build",
+    "prepare": "effect-tsgo patch --typescript --oxlint"
+  },
+  "dependencies": {
+    "effect": "4.0.0-rc.113"
+  },
+  "devDependencies": {
+    "@effect/tsgo": "0.38.0",
+    "@oxlint/plugins": "1.80.0",
+    "oxlint": "1.80.0",
+    "oxlint-tsgolint": "7.0.2001",
+    "typescript": "7.0.2",
+    "vite": "catalog:",
+    "vite-plus": "catalog:"
+  },
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "12.3.4",
+      "onFail": "download"
+    }
+  }
+}
