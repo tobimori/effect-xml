@@ -19,6 +19,12 @@ import {
   type ProjectedNode,
   type StructDecodeIssuesState,
 } from "./context.ts";
+import {
+  codecNameLabel,
+  hasExpandedName,
+  withLocalName,
+  type ResolvedCodecName,
+} from "./codec-name.ts";
 import { failIssues } from "./issue.ts";
 import {
   encoded,
@@ -32,27 +38,26 @@ import {
 interface FieldSpec {
   readonly key: PropertyKey;
   readonly placement: Exclude<Placement, { readonly kind: "struct" | "document" }>;
-  readonly name: string;
+  readonly name: ResolvedCodecName;
   readonly optional: boolean;
 }
 
 const encodedOptional = (field: StructField) =>
   SchemaAST.isOptional(SchemaAST.toEncoded(field.ast));
 
-const sameUnnamespacedName = (element: Attribute | Element, name: string) =>
-  element.name.localName === name && element.name.namespaceUri === undefined;
-
 const duplicateIssue = (
   key: PropertyKey,
   kind: "attribute" | "element",
-  name: string,
+  name: ResolvedCodecName,
   input: ReadonlyArray<Attribute | Child | undefined>,
   options: SchemaAST.ParseOptions,
 ) =>
   new SchemaIssue.Pointer(
     [key],
     new SchemaIssue.InvalidValue(
-      { message: `Duplicate known XML ${kind} ${JSON.stringify(name)}` },
+      {
+        message: `Duplicate known XML ${kind} ${JSON.stringify(codecNameLabel(name))}`,
+      },
       input,
       options,
     ),
@@ -96,19 +101,21 @@ export const Struct = <const Fields extends Readonly<Record<PropertyKey, StructF
       throw new Error(`Xml.Struct field ${String(key)} has no compatible XML placement`);
     }
     const direct = placement.kind === "array" ? placement.item : placement;
-    const name = direct.name ?? (Predicate.isString(key) ? key : undefined);
-    if (name === undefined) {
+    const localName = direct.name.localName ?? (Predicate.isString(key) ? key : undefined);
+    if (localName === undefined) {
       throw new Error(`Xml.Struct cannot infer an XML name from symbol field ${String(key)}`);
     }
+    const name = withLocalName(direct.name, localName);
 
     const domain = placement.kind === "attribute" ? "attribute" : "element";
-    const owner = ownership.get(`${domain}\u0000${name}`);
+    const ownershipKey = JSON.stringify([domain, name.namespaceUri ?? null, name.localName]);
+    const owner = ownership.get(ownershipKey);
     if (owner !== undefined) {
       throw new Error(
-        `Xml.Struct fields ${String(owner)} and ${String(key)} both own XML ${domain} ${JSON.stringify(name)}`,
+        `Xml.Struct fields ${String(owner)} and ${String(key)} both own XML ${domain} ${JSON.stringify(codecNameLabel(name))}`,
       );
     }
-    ownership.set(`${domain}\u0000${name}`, key);
+    ownership.set(ownershipKey, key);
 
     const provideName = <Value, Error, Services>(effect: Effect.Effect<Value, Error, Services>) =>
       Effect.flatMap(PlacementBindings, (parent) =>
@@ -120,7 +127,7 @@ export const Struct = <const Fields extends Readonly<Record<PropertyKey, StructF
       );
 
     const boundField =
-      direct.name === undefined
+      direct.name.localName === undefined
         ? Schema.middlewareEncoding(provideName)(Schema.middlewareDecoding(provideName)(field))
         : field;
     // SAFETY: Decoding and encoding middleware preserve the field's encoded XML category.
@@ -171,7 +178,7 @@ export const Struct = <const Fields extends Readonly<Record<PropertyKey, StructF
                   const matches: Array<number> = [];
                   for (let index = 0; index < content.attributes.length; index++) {
                     const attribute = content.attributes[index];
-                    if (attribute !== undefined && sameUnnamespacedName(attribute, spec.name)) {
+                    if (attribute !== undefined && hasExpandedName(attribute.name, spec.name)) {
                       matches.push(index);
                     }
                   }
@@ -202,7 +209,7 @@ export const Struct = <const Fields extends Readonly<Record<PropertyKey, StructF
                   if (
                     child !== undefined &&
                     isElement(child) &&
-                    sameUnnamespacedName(child, spec.name)
+                    hasExpandedName(child.name, spec.name)
                   ) {
                     matches.push(index);
                   }

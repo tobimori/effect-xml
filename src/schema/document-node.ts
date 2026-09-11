@@ -98,9 +98,12 @@ const makeDocumentNode = (
           }),
         encode: (document) =>
           Effect.flatMap(CurrentEncodeState, (state) => {
-            let serializerOptions: SerializeOptions = {
-              structured: state?.structured ?? new WeakSet(),
-            };
+            let serializerOptions: SerializeOptions = shareCurrentState
+              ? {
+                  structured: state?.structured ?? new WeakSet(),
+                  typed: state?.typed ?? new WeakSet(),
+                }
+              : {};
             if (options.pretty !== undefined) {
               serializerOptions = { ...serializerOptions, pretty: options.pretty };
             }

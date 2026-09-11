@@ -66,6 +66,7 @@ export const Document = <S extends DocumentRoot>(
       Effect.suspend(() =>
         Effect.provideService(effect, CurrentEncodeState, {
           structured: new WeakSet(),
+          typed: new WeakSet(),
           sortKeys: options.sortKeys !== false,
         }),
       ),

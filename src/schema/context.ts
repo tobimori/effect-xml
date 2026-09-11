@@ -5,13 +5,14 @@ import type { Attribute } from "../ast/attribute.ts";
 import type { Element } from "../ast/element.ts";
 import type { Node } from "../ast/node.ts";
 import { xmlNamespace } from "../namespace/validation.ts";
+import type { ResolvedCodecName } from "./codec-name.ts";
 import type { PlacementToken } from "./metadata.ts";
 import type { XmlLocation } from "./provenance.ts";
 
 export interface PlacementBindingsState {
   readonly parent?: PlacementBindingsState;
   readonly token?: PlacementToken;
-  readonly name?: string;
+  readonly name?: ResolvedCodecName;
 }
 
 export const PlacementBindings = Context.Reference<PlacementBindingsState>(
@@ -74,6 +75,7 @@ export const CurrentDecodeState = Context.Reference<DecodeState | undefined>(
 
 export interface EncodeState {
   readonly structured: WeakSet<Element>;
+  readonly typed: WeakSet<Element>;
   readonly sortKeys: boolean;
 }
 

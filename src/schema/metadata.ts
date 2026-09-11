@@ -4,6 +4,7 @@ import * as SchemaAST from "effect/SchemaAST";
 
 import type { Attribute } from "../ast/attribute.ts";
 import type { Child, Element } from "../ast/element.ts";
+import type { CodecName } from "./codec-name.ts";
 
 const PlacementAnnotation = "effect-xml/placement";
 
@@ -12,12 +13,12 @@ export interface PlacementToken {}
 export type Placement =
   | {
       readonly kind: "attribute";
-      readonly name: string | undefined;
+      readonly name: CodecName;
       readonly token: PlacementToken;
     }
   | {
       readonly kind: "element";
-      readonly name: string | undefined;
+      readonly name: CodecName;
       readonly token: PlacementToken;
       readonly structured: boolean;
     }

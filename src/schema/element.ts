@@ -8,8 +8,9 @@ import * as SchemaTransformation from "effect/SchemaTransformation";
 import type { Attribute } from "../ast/attribute.ts";
 import { isComment } from "../ast/comment.ts";
 import { Element as ElementNode, isElement, type Child } from "../ast/element.ts";
-import { Name } from "../ast/name.ts";
+import { Name as AstName } from "../ast/name.ts";
 import { Text, isCData, isText } from "../ast/text.ts";
+import { isName, type Name } from "../namespace/name.ts";
 import { isXmlWhitespace } from "../parser/character.ts";
 import {
   CurrentDecodeState,
@@ -20,16 +21,27 @@ import {
   resolvePlacementName,
   type DecodeState,
 } from "./context.ts";
+import {
+  astNameFields,
+  codecNameFrom,
+  codecNameLabel,
+  hasExpandedName,
+  resolvedCodecName,
+  type CodecName,
+  type ResolvedCodecName,
+} from "./codec-name.ts";
 import { failIssues } from "./issue.ts";
 import { encoded, getPlacement, type ElementContent, type PlacementToken } from "./metadata.ts";
 import { scalar, validateXmlCharacters } from "./scalar.ts";
 
-const resolveName = (explicitName: string | undefined, token: PlacementToken) =>
-  Effect.map(PlacementBindings, (scope) => explicitName ?? resolvePlacementName(scope, token));
+const resolveName = (explicitName: CodecName, token: PlacementToken) => {
+  const ownName = resolvedCodecName(explicitName);
+  return Effect.map(PlacementBindings, (scope) => ownName ?? resolvePlacementName(scope, token));
+};
 
 const checkName = (
   element: ElementNode,
-  name: string | undefined,
+  name: ResolvedCodecName | undefined,
   options: SchemaAST.ParseOptions,
 ) => {
   if (name === undefined) {
@@ -41,12 +53,10 @@ const checkName = (
       ),
     );
   }
-  if (element.name.localName === name && element.name.namespaceUri === undefined) {
-    return Effect.succeed(name);
-  }
+  if (hasExpandedName(element.name, name)) return Effect.succeed(name);
   return Effect.fail(
     new SchemaIssue.InvalidValue(
-      { message: `Expected XML element ${JSON.stringify(name)}` },
+      { message: `Expected XML element ${JSON.stringify(codecNameLabel(name))}` },
       element,
       options,
     ),
@@ -73,7 +83,7 @@ const describeChild = (child: Child) => {
 
 // RETURN TYPE: Fixes the encoded category while preserving target services.
 const makeElementCodec = <S extends Schema.Constraint>(
-  explicitName: string | undefined,
+  explicitName: CodecName,
   target: S,
   structured: boolean,
   decodeContent: (
@@ -121,11 +131,12 @@ const makeElementCodec = <S extends Schema.Constraint>(
               : Effect.flatMap(encodeContent(value, options), ({ attributes, children }) =>
                   Effect.map(CurrentEncodeState, (state) => {
                     const element = new ElementNode({
-                      name: new Name({ localName: name }),
+                      name: new AstName(astNameFields(name)),
                       namespaceDeclarations: [],
                       attributes,
                       children,
                     });
+                    state?.typed.add(element);
                     if (structured) state?.structured.add(element);
                     return element;
                   }),
@@ -155,16 +166,35 @@ export function Element<S extends Schema.Constraint>(
   content: S,
 ): Schema.Codec<S["Type"], ElementNode, S["DecodingServices"], S["EncodingServices"]>;
 export function Element<S extends Schema.Constraint>(
-  name: string,
+  name: string | Name,
   content: S,
 ): Schema.Codec<S["Type"], ElementNode, S["DecodingServices"], S["EncodingServices"]>;
 // RETURN TYPE: The overload implementation preserves the supplied content service sets.
 export function Element<S extends Schema.Constraint>(
-  nameOrContent: string | S,
+  nameOrContent: string | Name | S,
   maybeContent?: S,
 ): Schema.Codec<S["Type"], ElementNode, S["DecodingServices"], S["EncodingServices"]> {
-  const explicitName = Predicate.isString(nameOrContent) ? nameOrContent : undefined;
-  const content = Predicate.isString(nameOrContent) ? maybeContent! : nameOrContent;
+  return makeElement({}, nameOrContent, maybeContent);
+}
+
+/** @internal Builds a namespace-factory element without changing the public constructor. */
+// RETURN TYPE: Preserves the supplied content schema's services through the private defaults.
+export const elementWithNameDefaults = <S extends Schema.Constraint>(
+  defaults: CodecName,
+  nameOrContent: string | S,
+  maybeContent?: S,
+): Schema.Codec<S["Type"], ElementNode, S["DecodingServices"], S["EncodingServices"]> =>
+  makeElement(defaults, nameOrContent, maybeContent);
+
+// RETURN TYPE: The helper preserves the selected content schema's service sets.
+const makeElement = <S extends Schema.Constraint>(
+  defaults: CodecName,
+  nameOrContent: string | Name | S,
+  maybeContent?: S,
+): Schema.Codec<S["Type"], ElementNode, S["DecodingServices"], S["EncodingServices"]> => {
+  const named = Predicate.isString(nameOrContent) || isName(nameOrContent);
+  const explicitName = codecNameFrom(named ? nameOrContent : undefined, defaults);
+  const content = named ? maybeContent! : nameOrContent;
   const placement = getPlacement(content);
 
   if (placement?.kind === "struct") {
@@ -282,4 +312,4 @@ export function Element<S extends Schema.Constraint>(
         children: valid === "" ? [] : [new Text({ value: valid })],
       })),
   );
-}
+};

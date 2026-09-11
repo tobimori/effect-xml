@@ -1,6 +1,11 @@
-/** Effect Schema codecs for the production RSS XML slice. */
+/** Effect Schema codecs for XML. */
 
 export { optional, optionalKey } from "effect/Schema";
+
+export { NamespaceBinding, isNamespaceBinding } from "./namespace/binding.ts";
+export { NamespaceContext, isNamespaceContext } from "./namespace/context.ts";
+export { Name, isName } from "./namespace/name.ts";
+export { Namespace } from "./namespace/namespace.ts";
 
 export { Array } from "./schema/array.ts";
 export { Attribute } from "./schema/attribute.ts";
