@@ -3,7 +3,7 @@ import * as Schema from "effect/Schema";
 import type { Attribute as AttributeNode } from "../ast/attribute.ts";
 import type { Element as ElementNode } from "../ast/element.ts";
 import { attributeWithNameDefaults } from "../schema/attribute.ts";
-import { elementWithNameDefaults } from "../schema/element.ts";
+import { elementWithNameDefaults, type ElementContentInput } from "../schema/element.ts";
 import { validateBinding, xmlnsNamespace } from "./validation.ts";
 
 interface NamespaceFieldsInput {
@@ -25,11 +25,11 @@ const NamespaceFields = Schema.Struct({
 
 export interface NamespaceElement {
   <S extends Schema.Constraint>(
-    content: S,
+    content: ElementContentInput<S>,
   ): Schema.Codec<S["Type"], ElementNode, S["DecodingServices"], S["EncodingServices"]>;
   <S extends Schema.Constraint>(
     localName: string,
-    content: S,
+    content: ElementContentInput<S>,
   ): Schema.Codec<S["Type"], ElementNode, S["DecodingServices"], S["EncodingServices"]>;
 }
 
@@ -65,11 +65,11 @@ export const Namespace = (
       : { namespaceUri: fields.namespaceUri, prefix: fields.prefix };
 
   function Element<S extends Schema.Constraint>(
-    content: S,
+    content: ElementContentInput<S>,
   ): Schema.Codec<S["Type"], ElementNode, S["DecodingServices"], S["EncodingServices"]>;
   function Element<S extends Schema.Constraint>(
     localName: string,
-    content: S,
+    content: ElementContentInput<S>,
   ): Schema.Codec<S["Type"], ElementNode, S["DecodingServices"], S["EncodingServices"]>;
   function Element<S extends Schema.Constraint>(nameOrContent: string | S, maybeContent?: S) {
     return elementWithNameDefaults(defaults, nameOrContent, maybeContent);

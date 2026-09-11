@@ -5,12 +5,19 @@ import * as SchemaAST from "effect/SchemaAST";
 import * as SchemaIssue from "effect/SchemaIssue";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 
-import { isElement, type Child } from "../ast/element.ts";
+import { isChild, type Child } from "../ast/element.ts";
 import { Fragment as AstFragment } from "../ast/fragment.ts";
 import { NamespaceContext } from "../namespace/context.ts";
 import { CurrentDecodeState, CurrentEncodeState, withXmlDecodeState } from "./context.ts";
+import { delegateRequired } from "./delegate.ts";
 import { fragmentNodeWithinFragment, type FragmentNodeOptions } from "./fragment-node.ts";
-import { acceptsEncodedUndefined, getPlacement, type FragmentContent } from "./metadata.ts";
+import {
+  acceptsEncodedUndefined,
+  getPlacement,
+  isSingleChildPlacement,
+  type FragmentContent,
+} from "./metadata.ts";
+import { canonicalizeOrderedChildren, validateOrderedChildren } from "./ordered-content.ts";
 
 export interface FragmentOptions extends FragmentNodeOptions {
   readonly sortKeys?: boolean;
@@ -57,7 +64,10 @@ export const Fragment = <S extends FragmentContent>(
   options: FragmentOptions = {},
 ): Schema.Codec<S["Type"], string, S["DecodingServices"], S["EncodingServices"]> => {
   const placement = getPlacement(content);
-  if (placement?.kind !== "element" && placement?.kind !== "array") {
+  if (
+    placement === undefined ||
+    (placement.kind !== "array" && placement.kind !== "tuple" && !isSingleChildPlacement(placement))
+  ) {
     throw new Error("Xml.Fragment requires an XML child or child-sequence codec");
   }
   const optional = acceptsEncodedUndefined(content);
@@ -68,26 +78,27 @@ export const Fragment = <S extends FragmentContent>(
       SchemaTransformation.transformEffect({
         decode: (fragment, parseOptions) =>
           Effect.flatMap(CurrentDecodeState, (state) => {
-            if (placement.kind === "array") {
-              if (state !== undefined) state.root = fragment.children;
-              return Effect.succeed(fragment.children as S["Encoded"]);
+            const children = canonicalizeOrderedChildren(fragment.children, state);
+            if (placement.kind === "array" || placement.kind === "tuple") {
+              if (state !== undefined) state.root = children;
+              return Effect.succeed(children as S["Encoded"]);
             }
-            if (fragment.children.length === 0 && optional) {
+            if (children.length === 0 && optional) {
               if (state !== undefined) state.root = fragment;
               return Effect.succeed(undefined as S["Encoded"]);
             }
-            if (fragment.children.length !== 1) {
+            if (children.length !== 1) {
               if (state !== undefined) state.root = fragment;
               return Effect.fail(
-                invalid("Expected exactly one XML fragment child", fragment.children, parseOptions),
+                invalid("Expected exactly one XML fragment child", children, parseOptions),
               );
             }
-            const child = fragment.children[0]!;
+            const child = children[0]!;
             if (state !== undefined) state.root = child;
             return Effect.succeed(child as S["Encoded"]);
           }),
         encode: (encoded, parseOptions) => {
-          if (placement.kind === "array") {
+          if (placement.kind === "array" || placement.kind === "tuple") {
             if (encoded === undefined && optional) {
               return Effect.fail(
                 invalid(
@@ -97,33 +108,39 @@ export const Fragment = <S extends FragmentContent>(
                 ),
               );
             }
-            if (!globalThis.Array.isArray(encoded) || !encoded.every(isElement)) {
+            if (!globalThis.Array.isArray(encoded) || !encoded.every(isChild)) {
               return Effect.fail(
                 invalid("Expected an encoded XML child sequence", encoded, parseOptions),
               );
             }
-            return Effect.succeed(new AstFragment({ children: encoded }));
+            return Effect.map(
+              validateOrderedChildren(encoded, content.ast, parseOptions),
+              (children) => new AstFragment({ children }),
+            );
           }
           if (encoded === undefined && optional) {
             return Effect.succeed(new AstFragment({ children: [] }));
           }
-          if (!isElement(encoded)) {
+          if (!isChild(encoded)) {
             return Effect.fail(
               invalid("Expected one encoded XML fragment child", encoded, parseOptions),
             );
           }
           const children: ReadonlyArray<Child> = [encoded];
-          return Effect.succeed(new AstFragment({ children }));
+          return Effect.map(
+            validateOrderedChildren(children, content.ast, parseOptions),
+            (valid) => new AstFragment({ children: valid }),
+          );
         },
       }),
     ),
   );
 
-  return codec.pipe(
-    Schema.middlewareDecoding((effect, parseOptions) =>
+  return delegateRequired(
+    codec,
+    (effect, parseOptions) =>
       withXmlDecodeState(Effect.andThen(validateOptions(options, parseOptions), effect), true),
-    ),
-    Schema.middlewareEncoding((effect, parseOptions) =>
+    (effect, parseOptions) =>
       Effect.suspend(() =>
         Effect.flatMap(validateOptions(options, parseOptions), (version) =>
           Effect.provideService(effect, CurrentEncodeState, {
@@ -137,6 +154,5 @@ export const Fragment = <S extends FragmentContent>(
           }),
         ),
       ),
-    ),
   );
 };

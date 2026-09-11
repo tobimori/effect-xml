@@ -1,36 +1,51 @@
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import * as SchemaAST from "effect/SchemaAST";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 
-import { Element, isElement } from "../ast/element.ts";
-import { encoded, getPlacement, type ArrayItem } from "./metadata.ts";
+import { CurrentDecodeState } from "./context.ts";
+import { encoded, getPlacement, isSingleChildPlacement, type ArrayItem } from "./metadata.ts";
+import {
+  canonicalizeOrderedChildren,
+  isOrderedChild,
+  validateOrderedChildren,
+} from "./ordered-content.ts";
+import { guardDescent, guardProduct } from "./path-guard.ts";
 
-/** Repeats an element codec while retaining encounter order. */
+type ArrayItemInput<S extends ArrayItem> = S["~encoded.optionality"] extends "optional" ? never : S;
+
+/** Repeats one XML child codec while retaining encounter order. */
 export const Array = <S extends ArrayItem>(
-  item: S,
+  item: ArrayItemInput<S>,
 ): Schema.Codec<
   ReadonlyArray<S["Type"]>,
-  ReadonlyArray<Element>,
+  ReadonlyArray<S["Encoded"]>,
   S["DecodingServices"],
   S["EncodingServices"]
 > => {
-  const placement = getPlacement(item);
-  if (placement?.kind !== "element") {
-    throw new Error("Xml.Array requires an XML element codec with retained placement");
+  if (SchemaAST.isOptional(SchemaAST.toEncoded(item.ast))) {
+    throw new Error("Xml.Array items cannot use encoded optional-key placement");
   }
-
+  const placement = getPlacement(item);
+  if (placement === undefined || !isSingleChildPlacement(placement)) {
+    throw new Error("Xml.Array requires a single XML child codec with retained placement");
+  }
   const raw = encoded(
-    // oxlint-disable-next-line anti-slop/no-unknown-parameters -- This is the Schema.declare array parsing boundary.
-    (input): input is ReadonlyArray<Element> =>
-      globalThis.Array.isArray(input) && input.every(isElement),
+    // oxlint-disable-next-line anti-slop/no-unknown-parameters -- This is the ordered child-array boundary.
+    (input): input is ReadonlyArray<S["Encoded"]> =>
+      globalThis.Array.isArray(input) && input.every(isOrderedChild),
     { kind: "array", item: placement },
   );
-
   return raw.pipe(
     Schema.decodeTo(
-      Schema.Array(item),
-      SchemaTransformation.transform({
-        decode: (elements) => elements,
-        encode: (elements) => elements,
+      guardProduct(Schema.Array(guardDescent(item))),
+      SchemaTransformation.transformEffect<
+        ReadonlyArray<S["Encoded"]>,
+        ReadonlyArray<S["Encoded"]>
+      >({
+        decode: (children) =>
+          Effect.map(CurrentDecodeState, (state) => canonicalizeOrderedChildren(children, state)),
+        encode: (children, options) => validateOrderedChildren(children, raw.ast, options),
       }),
     ),
   );

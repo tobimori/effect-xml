@@ -8,6 +8,7 @@ import { Fragment as AstFragment } from "../ast/fragment.ts";
 import { parseFragment, type FragmentParseOptions } from "../parser/parser.ts";
 import { serializeFragment, type FragmentSerializeOptions } from "../serializer/serializer.ts";
 import { CurrentDecodeState, CurrentEncodeState, withXmlDecodeState } from "./context.ts";
+import { delegateRequired } from "./delegate.ts";
 
 export interface FragmentNodeOptions extends FragmentParseOptions {
   readonly pretty?: boolean;
@@ -52,8 +53,10 @@ const makeFragmentNode = (
     ),
   );
 
-  return codec.pipe(
-    Schema.middlewareDecoding((effect) => withXmlDecodeState(effect, !shareCurrentState)),
+  return delegateRequired(
+    codec,
+    (effect) => withXmlDecodeState(effect, !shareCurrentState),
+    (effect) => effect,
   );
 };
 

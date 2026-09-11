@@ -1,3 +1,4 @@
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
@@ -7,11 +8,10 @@ import * as SchemaTransformation from "effect/SchemaTransformation";
 
 import type { Attribute } from "../ast/attribute.ts";
 import { isComment } from "../ast/comment.ts";
-import { Element as ElementNode, isElement, type Child } from "../ast/element.ts";
+import { Element as ElementNode, isChild, isElement, type Child } from "../ast/element.ts";
 import { Name as AstName } from "../ast/name.ts";
 import { Text, isCData, isText } from "../ast/text.ts";
 import { isName, type Name } from "../namespace/name.ts";
-import { isXmlWhitespace } from "../parser/character.ts";
 import {
   CurrentDecodeState,
   CurrentEncodeState,
@@ -30,8 +30,21 @@ import {
   type CodecName,
   type ResolvedCodecName,
 } from "./codec-name.ts";
+import { delegateRequired } from "./delegate.ts";
 import { failIssues } from "./issue.ts";
-import { encoded, getPlacement, type ElementContent, type PlacementToken } from "./metadata.ts";
+import {
+  acceptsEncodedUndefined,
+  encoded,
+  getPlacement,
+  isSingleChildPlacement,
+  resolveChildPlacements,
+  resolveSuspendedPlacement,
+  type ElementContent,
+  type PlacementToken,
+} from "./metadata.ts";
+import { canonicalizeOrderedChildren, validateOrderedChildren } from "./ordered-content.ts";
+import { guardParsePath } from "./path-guard.ts";
+import { associateSource } from "./provenance.ts";
 import { scalar, validateXmlCharacters } from "./scalar.ts";
 
 const resolveName = (explicitName: CodecName, token: PlacementToken) => {
@@ -67,18 +80,127 @@ const unexpectedContentIssue = (
   description: string,
   input: Attribute | Child,
   options: SchemaAST.ParseOptions,
-) =>
-  new SchemaIssue.InvalidValue(
+  state?: DecodeState,
+) => {
+  const issue = new SchemaIssue.InvalidValue(
     { message: `Unexpected ${description} in XML element content` },
     input,
     options,
   );
+  const location = state?.positions.get(input);
+  return location === undefined ? issue : associateSource(issue, { location: () => location });
+};
 
 const describeChild = (child: Child) => {
   if (isText(child)) return "text";
   if (isCData(child)) return "CDATA";
   if (isElement(child)) return `XML element ${JSON.stringify(child.name.qualifiedName)}`;
   return isComment(child) ? "XML comment" : "XML processing instruction";
+};
+
+interface ElementDecodeIssues {
+  readonly issues: Array<SchemaIssue.Issue>;
+  input?: unknown;
+}
+
+const CurrentElementDecodeIssues = Context.Reference<ElementDecodeIssues | undefined>(
+  "effect-xml/schema/CurrentElementDecodeIssues",
+  { defaultValue: () => undefined },
+);
+
+const deferElementIssues = <Input>(
+  ast: SchemaAST.AST,
+  issues: ReadonlyArray<SchemaIssue.Issue>,
+  input: Input,
+  options: SchemaAST.ParseOptions,
+) => {
+  if (issues.length === 0) return Effect.void;
+  return Effect.flatMap(CurrentElementDecodeIssues, (scope) => {
+    if (options.errors !== "all" || scope === undefined) {
+      return failIssues(ast, issues, input, options);
+    }
+    scope.issues.push(...issues);
+    scope.input = input;
+    return Effect.void;
+  });
+};
+
+const checkOrderedAttributes = (
+  element: ElementNode,
+  options: SchemaAST.ParseOptions,
+  ast: SchemaAST.AST,
+  state?: DecodeState,
+) => {
+  if (options.onExcessProperty !== "error") return Effect.void;
+  const issues: Array<SchemaIssue.Issue> = [];
+  for (const attribute of element.attributes) {
+    if (!isXmlSpaceAttribute(attribute)) {
+      issues.push(
+        unexpectedContentIssue(
+          `XML attribute ${JSON.stringify(attribute.name.qualifiedName)}`,
+          attribute,
+          options,
+          state,
+        ),
+      );
+    }
+  }
+  return deferElementIssues(ast, issues, element, options);
+};
+
+const decodeSimpleText = (
+  element: ElementNode,
+  options: SchemaAST.ParseOptions,
+  ast: SchemaAST.AST,
+) => {
+  let value = "";
+  const issues: Array<SchemaIssue.Issue> = [];
+  if (options.onExcessProperty === "error") {
+    for (const attribute of element.attributes) {
+      if (!isXmlSpaceAttribute(attribute)) {
+        issues.push(
+          unexpectedContentIssue(
+            `XML attribute ${JSON.stringify(attribute.name.qualifiedName)}`,
+            attribute,
+            options,
+          ),
+        );
+      }
+    }
+  }
+  for (const child of element.children) {
+    if (isText(child) || isCData(child)) value += child.value;
+    else if (isElement(child)) {
+      issues.push(
+        new SchemaIssue.InvalidValue(
+          { message: "Expected simple XML character content" },
+          element,
+          options,
+        ),
+      );
+    } else if (options.onExcessProperty === "error") {
+      issues.push(unexpectedContentIssue(describeChild(child), child, options));
+    }
+  }
+  return issues.length > 0
+    ? failIssues(ast, issues, element, options)
+    : Effect.succeed(new Text({ value }));
+};
+
+const registerOrderedChildren = (
+  state: DecodeState | undefined,
+  element: ElementNode,
+  children: ReadonlyArray<Child>,
+  preservesSpace: boolean,
+) => {
+  if (state === undefined) return;
+  const projected = new Map<PropertyKey, Child>();
+  for (let index = 0; index < children.length; index++) {
+    const child = children[index]!;
+    projected.set(index, child);
+    if (isElement(child)) registerXmlSpace(state, child, preservesSpace);
+  }
+  state.projections.set(element, projected);
 };
 
 const makeElementCodec = <S extends Schema.Constraint>(
@@ -145,28 +267,54 @@ const makeElementCodec = <S extends Schema.Constraint>(
     ),
   );
 
-  return codec.pipe(
-    Schema.middlewareDecoding((effect) =>
-      Effect.flatMap(CurrentDecodeState, (state) => {
-        if (state !== undefined) return effect;
-        const standaloneState: DecodeState = {
-          positions: new WeakMap(),
-          projections: new WeakMap(),
-          preservesSpace: new WeakMap(),
-        };
-        return Effect.provideService(effect, CurrentDecodeState, standaloneState);
-      }),
-    ),
+  return delegateRequired(
+    codec,
+    (effect, options, input) => {
+      const scope: ElementDecodeIssues = { issues: [] };
+      const scoped = Effect.provideService(effect, CurrentElementDecodeIssues, scope);
+      const accumulated = Effect.matchEffect(scoped, {
+        onFailure: (contentIssue) => {
+          if (scope.issues.length === 0) return Effect.fail(contentIssue);
+          const issues: [SchemaIssue.Issue, ...Array<SchemaIssue.Issue>] = [
+            scope.issues[0]!,
+            ...scope.issues.slice(1),
+            contentIssue,
+          ];
+          return Effect.fail(new SchemaIssue.Composite(raw.ast, issues, scope.input, options));
+        },
+        onSuccess: (value) =>
+          scope.issues.length === 0
+            ? Effect.succeed(value)
+            : failIssues(raw.ast, scope.issues, scope.input, options),
+      });
+      return guardParsePath(
+        input,
+        Effect.flatMap(CurrentDecodeState, (state) => {
+          if (state !== undefined) return accumulated;
+          const standaloneState: DecodeState = {
+            positions: new WeakMap(),
+            projections: new WeakMap(),
+            preservesSpace: new WeakMap(),
+          };
+          return Effect.provideService(accumulated, CurrentDecodeState, standaloneState);
+        }),
+        options,
+      );
+    },
+    (effect) => effect,
   );
 };
 
+export type ElementContentInput<S extends Schema.Constraint> =
+  Extract<S["Encoded"], Attribute> extends never ? S : never;
+
 /** Wraps scalar or structured content in a named XML element. */
 export function Element<S extends Schema.Constraint>(
-  content: S,
+  content: ElementContentInput<S>,
 ): Schema.Codec<S["Type"], ElementNode, S["DecodingServices"], S["EncodingServices"]>;
 export function Element<S extends Schema.Constraint>(
   name: string | Name,
-  content: S,
+  content: ElementContentInput<S>,
 ): Schema.Codec<S["Type"], ElementNode, S["DecodingServices"], S["EncodingServices"]>;
 export function Element<S extends Schema.Constraint>(
   nameOrContent: string | Name | S,
@@ -197,7 +345,7 @@ const makeElement = <S extends Schema.Constraint>(
     return makeElementCodec(
       explicitName,
       content,
-      true,
+      placement.structured,
       (element) => {
         return Effect.succeed({
           element,
@@ -212,53 +360,147 @@ const makeElement = <S extends Schema.Constraint>(
     );
   }
 
-  if (placement?.kind === "array") {
+  if (placement?.kind === "array" || placement?.kind === "tuple") {
     return makeElementCodec(
       explicitName,
       content,
       false,
       (element, options, ast, preservesSpace) =>
         Effect.flatMap(CurrentDecodeState, (state) => {
-          const elements: Array<ElementNode> = [];
-          const issues: Array<SchemaIssue.Issue> = [];
-          if (options.onExcessProperty === "error") {
-            for (const attribute of element.attributes) {
-              if (!isXmlSpaceAttribute(attribute)) {
-                issues.push(
-                  unexpectedContentIssue(
-                    `XML attribute ${JSON.stringify(attribute.name.qualifiedName)}`,
-                    attribute,
-                    options,
-                  ),
+          const children = canonicalizeOrderedChildren(element.children, state);
+          if (placement.kind === "array" && options.onExcessProperty === "error") {
+            const resolved = resolveChildPlacements(placement.item, true);
+            if (
+              resolved.complete &&
+              resolved.placements.every((childPlacement) => childPlacement.kind === "element")
+            ) {
+              const issues = children
+                .filter((child) => !isElement(child))
+                .map((child) =>
+                  unexpectedContentIssue(describeChild(child), child, options, state),
                 );
-              }
+              return Effect.andThen(
+                Effect.andThen(
+                  checkOrderedAttributes(element, options, ast, state),
+                  deferElementIssues(ast, issues, element, options),
+                ),
+                () => {
+                  registerOrderedChildren(state, element, children, preservesSpace);
+                  return Effect.succeed(children as S["Encoded"]);
+                },
+              );
             }
           }
-          for (const child of element.children) {
-            if (isElement(child)) {
-              elements.push(child);
-              registerXmlSpace(state, child, preservesSpace);
-            } else if (!(isText(child) && !preservesSpace && isXmlWhitespace(child.value))) {
-              if (options.onExcessProperty === "error") {
-                issues.push(unexpectedContentIssue(describeChild(child), child, options));
-              }
-            }
-          }
-          if (state !== undefined) {
-            const projected = new Map<PropertyKey, ElementNode>();
-            for (let index = 0; index < elements.length; index++) {
-              projected.set(index, elements[index]!);
-            }
-            state.projections.set(element, projected);
-          }
-          if (issues.length > 0) return failIssues(ast, issues, element, options);
-          return Effect.succeed(elements as S["Encoded"]);
+          return Effect.andThen(checkOrderedAttributes(element, options, ast, state), () => {
+            registerOrderedChildren(state, element, children, preservesSpace);
+            return Effect.succeed(children as S["Encoded"]);
+          });
         }),
-      (value) => {
-        const children = value as ReadonlyArray<ElementNode>;
-        return Effect.succeed({ attributes: [], children });
+      (value, options) => {
+        if (!globalThis.Array.isArray(value) || !value.every(isChild)) {
+          return Effect.fail(
+            new SchemaIssue.InvalidValue(
+              { message: "Expected an encoded ordered XML child sequence" },
+              value,
+              options,
+            ),
+          );
+        }
+        return Effect.map(validateOrderedChildren(value, content.ast, options), (children) => ({
+          attributes: [],
+          children,
+        }));
       },
     );
+  }
+
+  if (placement?.kind === "text") {
+    return makeElementCodec(
+      explicitName,
+      content,
+      false,
+      (element, options, ast) =>
+        decodeSimpleText(element, options, ast) as Effect.Effect<S["Encoded"], SchemaIssue.Issue>,
+      (value, options) => {
+        if (!isText(value)) {
+          return Effect.fail(
+            new SchemaIssue.InvalidValue(
+              { message: "Expected encoded simple XML text content" },
+              value,
+              options,
+            ),
+          );
+        }
+        return Effect.succeed({
+          attributes: [],
+          children: value.value === "" ? [] : [value],
+        });
+      },
+    );
+  }
+
+  if (placement !== undefined && isSingleChildPlacement(placement)) {
+    const optional = acceptsEncodedUndefined(content);
+    return makeElementCodec(
+      explicitName,
+      content,
+      false,
+      (element, options, ast, preservesSpace) => {
+        if (resolveSuspendedPlacement(placement)?.kind === "text") {
+          return decodeSimpleText(element, options, ast) as Effect.Effect<
+            S["Encoded"],
+            SchemaIssue.Issue
+          >;
+        }
+        return Effect.flatMap(CurrentDecodeState, (state) =>
+          Effect.andThen(checkOrderedAttributes(element, options, ast, state), () => {
+            const children = canonicalizeOrderedChildren(element.children, state);
+            registerOrderedChildren(state, element, children, preservesSpace);
+            if (children.length === 0 && optional) {
+              return Effect.succeed(undefined as S["Encoded"]);
+            }
+            if (children.length !== 1) {
+              return Effect.fail(
+                new SchemaIssue.InvalidValue(
+                  { message: "Expected exactly one ordered XML child" },
+                  children,
+                  options,
+                ),
+              );
+            }
+            return Effect.succeed(children[0]! as S["Encoded"]);
+          }),
+        );
+      },
+      (value, options) => {
+        if (resolveSuspendedPlacement(placement)?.kind === "text" && isText(value)) {
+          return Effect.succeed({
+            attributes: [],
+            children: value.value === "" ? [] : [value],
+          });
+        }
+        if (value === undefined && optional) {
+          return Effect.succeed({ attributes: [], children: [] });
+        }
+        if (!isChild(value)) {
+          return Effect.fail(
+            new SchemaIssue.InvalidValue(
+              { message: "Expected one encoded ordered XML child" },
+              value,
+              options,
+            ),
+          );
+        }
+        return Effect.map(validateOrderedChildren([value], content.ast, options), (children) => ({
+          attributes: [],
+          children,
+        }));
+      },
+    );
+  }
+
+  if (placement !== undefined) {
+    throw new Error(`Xml.Element cannot use XML ${placement.kind} placement as content`);
   }
 
   const text = scalar(content);

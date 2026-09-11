@@ -8,6 +8,7 @@ import { Document as AstDocument } from "../ast/document.ts";
 import { parseDocument, type ParseOptions } from "../parser/parser.ts";
 import { serializeDocument, type SerializeOptions } from "../serializer/serializer.ts";
 import { CurrentDecodeState, CurrentEncodeState, withXmlDecodeState } from "./context.ts";
+import { delegateRequired } from "./delegate.ts";
 import { encodedString } from "./metadata.ts";
 
 export interface DocumentNodeOptions extends ParseOptions {
@@ -56,8 +57,10 @@ const makeDocumentNode = (
     ),
   );
 
-  return codec.pipe(
-    Schema.middlewareDecoding((effect) => withDocumentDecodeState(effect, !shareCurrentState)),
+  return delegateRequired(
+    codec,
+    (effect) => withDocumentDecodeState(effect, !shareCurrentState),
+    (effect) => effect,
   );
 };
 

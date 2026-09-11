@@ -8,6 +8,7 @@ import { Declaration } from "../ast/declaration.ts";
 import { Document as AstDocument } from "../ast/document.ts";
 import { isElement } from "../ast/element.ts";
 import { CurrentEncodeState } from "./context.ts";
+import { delegateRequired } from "./delegate.ts";
 import {
   documentNodeWithinDocument,
   type DocumentNodeOptions,
@@ -123,9 +124,10 @@ export const Document = <S extends DocumentRoot>(
     ),
   );
 
-  return codec.pipe(
-    Schema.middlewareDecoding((effect) => withDocumentDecodeState(effect, true)),
-    Schema.middlewareEncoding((effect, parseOptions) =>
+  return delegateRequired(
+    codec,
+    (effect) => withDocumentDecodeState(effect, true),
+    (effect, parseOptions) =>
       Effect.suspend(() =>
         Effect.flatMap(declarationFromOptions(options, parseOptions), () =>
           Effect.provideService(effect, CurrentEncodeState, {
@@ -139,6 +141,5 @@ export const Document = <S extends DocumentRoot>(
           }),
         ),
       ),
-    ),
   );
 };
