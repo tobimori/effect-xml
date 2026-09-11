@@ -39,6 +39,17 @@ export class ActiveNamespaces {
     return prefix === "xml" || this.#byPrefix.has(prefix);
   }
 
+  *prefixes() {
+    for (const [namespaceUri, bindings] of this.#byUri) {
+      if (namespaceUri === "") continue;
+      let binding = bindings.first;
+      while (binding !== undefined) {
+        yield binding.prefix;
+        binding = binding.nextForUri;
+      }
+    }
+  }
+
   isBound(prefix: Prefix) {
     return this.resolve(prefix) !== undefined;
   }

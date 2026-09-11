@@ -3,11 +3,13 @@ import * as Result from "effect/Result";
 import * as SchemaIssue from "effect/SchemaIssue";
 import * as SchemaParser from "effect/SchemaParser";
 
+import type { Attribute } from "../ast/attribute.ts";
 import { Document, type Misc } from "../ast/document.ts";
+import { hasElementChildCycle } from "../ast/element-cycle.ts";
 import { isElement, type Child, type Element } from "../ast/element.ts";
 import { Fragment as AstFragment } from "../ast/fragment.ts";
 import type { Name } from "../ast/name.ts";
-import type { NamespaceDeclaration } from "../ast/namespace-declaration.ts";
+import { NamespaceDeclaration } from "../ast/namespace-declaration.ts";
 import { isProcessingInstruction } from "../ast/processing-instruction.ts";
 import { isCData, isText } from "../ast/text.ts";
 import { isComment } from "../ast/comment.ts";
@@ -26,6 +28,10 @@ export interface SerializeOptions {
   readonly structured?: WeakSet<Element>;
   /** @internal Elements produced by typed codecs whose namespace prefixes may be allocated. */
   readonly typed?: WeakSet<Element>;
+  /** @internal Raw Rest attributes whose parsed prefixes must remain fixed on typed owners. */
+  readonly rawAttributes?: WeakSet<Attribute>;
+  /** @internal Effective Rest scopes restored before allocating typed names on their owners. */
+  readonly restNamespaces?: WeakMap<Element, NamespaceContext>;
 }
 
 /** Options used when serializing an ordered XML fragment. */
@@ -58,59 +64,20 @@ const invalid = (message: string) => new SchemaIssue.InvalidValue({ message });
 
 const failure = (message: string) => Result.fail<SchemaIssue.Issue>(invalid(message));
 
-/** Finds recursive element cycles without rejecting shared, already-completed subtrees. */
-const findElementCycle = (roots: ReadonlyArray<unknown>) => {
-  interface ElementCandidate {
-    readonly children: ReadonlyArray<unknown>;
+const decodeDocumentSafely = (document: Document) => {
+  try {
+    return decodeDocument(document);
+  } catch {
+    return failure("Invalid XML document");
   }
+};
 
-  interface Visit {
-    readonly element: ElementCandidate;
-    readonly exiting: boolean;
+const decodeFragmentSafely = (fragment: AstFragment) => {
+  try {
+    return decodeFragment(fragment);
+  } catch {
+    return failure("Invalid XML fragment");
   }
-
-  const work: Array<Visit> = [];
-  for (let index = roots.length - 1; index >= 0; index--) {
-    const root = roots[index];
-    if (
-      Predicate.isObject(root) &&
-      Predicate.hasProperty(root, "children") &&
-      Array.isArray(root.children)
-    ) {
-      // SAFETY: The checks above establish the candidate's readonly children array.
-      work.push({ element: root as ElementCandidate, exiting: false });
-    }
-  }
-
-  const states = new WeakMap<object, "active" | "complete">();
-  while (work.length > 0) {
-    const visit = work.pop();
-    if (visit === undefined) continue;
-
-    if (visit.exiting) {
-      states.set(visit.element, "complete");
-      continue;
-    }
-
-    const state = states.get(visit.element);
-    if (state === "active") return true;
-    if (state === "complete") continue;
-
-    states.set(visit.element, "active");
-    work.push({ element: visit.element, exiting: true });
-    for (let index = visit.element.children.length - 1; index >= 0; index--) {
-      const child = visit.element.children[index];
-      if (
-        Predicate.isObject(child) &&
-        Predicate.hasProperty(child, "children") &&
-        Array.isArray(child.children)
-      ) {
-        // SAFETY: The checks above establish the candidate's readonly children array.
-        work.push({ element: child as ElementCandidate, exiting: false });
-      }
-    }
-  }
-  return false;
 };
 
 const codePointLabel = (codePoint: number) =>
@@ -278,6 +245,7 @@ const enterNamespaceScope = (
   bindings: ActiveNamespaces,
   typed: boolean,
   version: XmlVersion,
+  fixedPrefixes?: ReadonlySet<string | undefined>,
 ) => {
   const declared = new Map<string | undefined, string>();
   for (const declaration of declarations) {
@@ -297,6 +265,7 @@ const enterNamespaceScope = (
     const current = bindings.lookup(declaration.prefix);
     const redundant =
       typed &&
+      fixedPrefixes?.has(declaration.prefix) !== true &&
       (current === declaration.namespaceUri ||
         (declaration.namespaceUri === "" && current === undefined));
     if (redundant) continue;
@@ -359,6 +328,87 @@ interface RenderedDeclaration {
   readonly namespaceUri: string;
 }
 
+const restoreRestNamespaceDeclarations = (
+  declarations: ReadonlyArray<NamespaceDeclaration>,
+  context: NamespaceContext,
+  bindings: ActiveNamespaces,
+  version: XmlVersion,
+) => {
+  const desired = new Map<string | undefined, string>();
+  for (const binding of context.bindings) {
+    if (binding.prefix !== "xml") desired.set(binding.prefix, binding.namespaceUri);
+  }
+
+  const explicit = new Map<string | undefined, NamespaceDeclaration>();
+  for (const declaration of declarations) {
+    if (explicit.has(declaration.prefix)) {
+      return failure(
+        `Namespace prefix ${JSON.stringify(declaration.prefix)} is declared more than once on one element`,
+      );
+    }
+    const bindingIssue = validateBinding(declaration.prefix, declaration.namespaceUri, version);
+    if (bindingIssue !== undefined) return failure(bindingIssue);
+    const characterIssue = invalidCharacter(declaration.namespaceUri, "Namespace URI", version);
+    if (characterIssue !== undefined) return Result.fail(characterIssue);
+
+    explicit.set(declaration.prefix, declaration);
+    if (declaration.prefix === "xml") continue;
+    const expected = desired.get(declaration.prefix);
+    const restoresAbsence = expected === undefined && declaration.namespaceUri === "";
+    if (expected !== declaration.namespaceUri && !restoresAbsence) {
+      return failure(
+        `Namespace prefix ${JSON.stringify(declaration.prefix)} conflicts with the effective Rest namespace snapshot`,
+      );
+    }
+  }
+
+  const restored: Array<NamespaceDeclaration> = [];
+  const fixedPrefixes = new Set<string | undefined>();
+  const append = (prefix: string | undefined, namespaceUri: string) => {
+    fixedPrefixes.add(prefix);
+    const declaration = explicit.get(prefix);
+    restored.push(
+      declaration ??
+        (prefix === undefined
+          ? new NamespaceDeclaration({ namespaceUri })
+          : new NamespaceDeclaration({ prefix, namespaceUri })),
+    );
+  };
+
+  // Emit the complete desired snapshot in its captured order. Besides fixing QName
+  // bindings, this keeps a later snapshot independent of an ancestor's binding order.
+  for (const [prefix, namespaceUri] of desired) append(prefix, namespaceUri);
+
+  const appendAbsence = (prefix: string | undefined) => {
+    if (prefix !== undefined && version === "1.0") {
+      return failure(
+        `Cannot restore the effective Rest namespace snapshot in XML 1.0 because inherited prefix ${JSON.stringify(prefix)} must be undeclared`,
+      );
+    }
+    append(prefix, "");
+    return undefined;
+  };
+  if (!desired.has(undefined)) {
+    const activeDefault = bindings.lookup(undefined);
+    if (activeDefault !== undefined && activeDefault !== "") appendAbsence(undefined);
+    else fixedPrefixes.add(undefined);
+  }
+  for (const prefix of bindings.prefixes()) {
+    if (
+      prefix !== undefined &&
+      prefix !== "xml" &&
+      !desired.has(prefix) &&
+      bindings.resolve(prefix) !== undefined
+    ) {
+      const absenceIssue = appendAbsence(prefix);
+      if (absenceIssue !== undefined) return absenceIssue;
+    }
+  }
+  return Result.succeed<
+    readonly [ReadonlyArray<NamespaceDeclaration>, ReadonlySet<string | undefined>]
+  >([restored, fixedPrefixes]);
+};
+
 const validateTypedName = (name: Name, attribute: boolean, version: XmlVersion) => {
   const nameIssue = validateName(name, attribute ? "Attribute" : "Element");
   if (nameIssue !== undefined) return nameIssue;
@@ -389,6 +439,7 @@ const allocateTypedName = (
   attribute: boolean,
   bindings: ActiveNamespaces,
   explicitBindings: ReadonlyMap<string | undefined, string>,
+  fixedPrefixes: ReadonlySet<string | undefined> | undefined,
   generated: Array<RenderedDeclaration>,
   namespaceUndo: Array<NamespaceUndo>,
   nextGeneratedPrefix: () => string,
@@ -408,6 +459,11 @@ const allocateTypedName = (
       }
       const defaultNamespace = bindings.lookup(undefined);
       if (defaultNamespace !== undefined && defaultNamespace !== "") {
+        if (fixedPrefixes !== undefined) {
+          return failure(
+            "An unnamespaced typed element cannot change the effective Rest namespace snapshot",
+          );
+        }
         generated.push({ prefix: undefined, namespaceUri: "" });
         namespaceUndo.push(bindings.enter(undefined, ""));
       }
@@ -419,6 +475,11 @@ const allocateTypedName = (
   if (active !== undefined) {
     return Result.succeed(
       active.prefix === undefined ? name.localName : `${active.prefix}:${name.localName}`,
+    );
+  }
+  if (fixedPrefixes !== undefined) {
+    return failure(
+      `${attribute ? "Attribute" : "Element"} ${JSON.stringify(qualifiedName(name))} requires namespace ${JSON.stringify(namespaceUri)}, which is not available in the effective Rest namespace snapshot`,
     );
   }
 
@@ -442,10 +503,37 @@ const serializeElementStart = (
   element: Element,
   bindings: ActiveNamespaces,
   typed: boolean,
+  rawAttributes: WeakSet<Attribute> | undefined,
+  restNamespaces: WeakMap<Element, NamespaceContext> | undefined,
   nextGeneratedPrefix: () => string,
   version: XmlVersion,
 ) => {
-  const scopeResult = enterNamespaceScope(element.namespaceDeclarations, bindings, typed, version);
+  let declarations = element.namespaceDeclarations;
+  let fixedPrefixes: ReadonlySet<string | undefined> | undefined;
+  const restNamespaceInput = restNamespaces?.get(element);
+  if (restNamespaceInput !== undefined) {
+    const contextResult = decodeNamespaceContext(restNamespaceInput);
+    if (Result.isFailure(contextResult)) return Result.fail(contextResult.failure);
+    const firstBinding = contextResult.success.bindings[0];
+    if (firstBinding?.prefix !== "xml" || firstBinding.namespaceUri !== xmlNamespace) {
+      return failure(
+        "An effective Rest namespace snapshot must begin with the implicit xml binding",
+      );
+    }
+    if (contextResult.success.bindings.some((binding) => binding.namespaceUri === "")) {
+      return failure("An effective Rest namespace snapshot cannot contain an empty binding");
+    }
+    const restored = restoreRestNamespaceDeclarations(
+      declarations,
+      contextResult.success,
+      bindings,
+      version,
+    );
+    if (Result.isFailure(restored)) return Result.fail(restored.failure);
+    [declarations, fixedPrefixes] = restored.success;
+  }
+
+  const scopeResult = enterNamespaceScope(declarations, bindings, typed, version, fixedPrefixes);
   if (Result.isFailure(scopeResult)) return Result.fail(scopeResult.failure);
   const [explicitDeclarations, entered, explicitBindings] = scopeResult.success;
   const namespaceUndo = [...entered];
@@ -463,6 +551,7 @@ const serializeElementStart = (
         false,
         bindings,
         explicitBindings,
+        fixedPrefixes,
         generatedDeclarations,
         namespaceUndo,
         nextAvailablePrefix,
@@ -479,23 +568,25 @@ const serializeElementStart = (
   const expandedAttributes = new Map<string | undefined, Set<string>>();
   const renderedAttributes: Array<readonly [string, string]> = [];
   for (const attribute of element.attributes) {
-    const attributeNameResult = typed
-      ? allocateTypedName(
-          attribute.name,
-          true,
-          bindings,
-          explicitBindings,
-          generatedDeclarations,
-          namespaceUndo,
-          nextAvailablePrefix,
-          version,
-        )
-      : (() => {
-          const issue = validateBoundName(attribute.name, bindings, true);
-          return issue === undefined
-            ? Result.succeed(qualifiedName(attribute.name))
-            : Result.fail<SchemaIssue.Issue>(issue);
-        })();
+    const attributeNameResult =
+      typed && rawAttributes?.has(attribute) !== true
+        ? allocateTypedName(
+            attribute.name,
+            true,
+            bindings,
+            explicitBindings,
+            fixedPrefixes,
+            generatedDeclarations,
+            namespaceUndo,
+            nextAvailablePrefix,
+            version,
+          )
+        : (() => {
+            const issue = validateBoundName(attribute.name, bindings, true);
+            return issue === undefined
+              ? Result.succeed(qualifiedName(attribute.name))
+              : Result.fail<SchemaIssue.Issue>(issue);
+          })();
     if (Result.isFailure(attributeNameResult)) return Result.fail(attributeNameResult.failure);
 
     let localNames = expandedAttributes.get(attribute.name.namespaceUri);
@@ -577,6 +668,8 @@ interface WriterOptions {
   readonly indent: string;
   readonly structured: WeakSet<Element> | undefined;
   readonly typed: WeakSet<Element> | undefined;
+  readonly rawAttributes: WeakSet<Attribute> | undefined;
+  readonly restNamespaces: WeakMap<Element, NamespaceContext> | undefined;
 }
 
 const validateOptions = (options: SerializeOptions | undefined) => {
@@ -616,6 +709,22 @@ const validateOptions = (options: SerializeOptions | undefined) => {
   ) {
     return failure("Serializer option typed must be a WeakSet");
   }
+  if (
+    Predicate.isObject(input) &&
+    Predicate.hasProperty(input, "rawAttributes") &&
+    input.rawAttributes !== undefined &&
+    !(input.rawAttributes instanceof WeakSet)
+  ) {
+    return failure("Serializer option rawAttributes must be a WeakSet");
+  }
+  if (
+    Predicate.isObject(input) &&
+    Predicate.hasProperty(input, "restNamespaces") &&
+    input.restNamespaces !== undefined &&
+    !(input.restNamespaces instanceof WeakMap)
+  ) {
+    return failure("Serializer option restNamespaces must be a WeakMap");
+  }
 
   const pretty = options?.pretty ?? true;
   const indent = options?.indent ?? "  ";
@@ -627,6 +736,8 @@ const validateOptions = (options: SerializeOptions | undefined) => {
     indent,
     structured: options?.structured,
     typed: options?.typed,
+    rawAttributes: options?.rawAttributes,
+    restNamespaces: options?.restNamespaces,
   });
 };
 
@@ -667,16 +778,24 @@ const fragmentNamespaces = (options: FragmentSerializeOptions | undefined, versi
 
 const documentElementRoots = (value: Document) => {
   const input: unknown = value;
-  return Predicate.isObject(input) && Predicate.hasProperty(input, "root") ? [input.root] : [];
+  try {
+    return Predicate.isObject(input) && Predicate.hasProperty(input, "root") ? [input.root] : [];
+  } catch {
+    return [];
+  }
 };
 
 const fragmentElementRoots = (value: AstFragment) => {
   const input: unknown = value;
-  return Predicate.isObject(input) &&
-    Predicate.hasProperty(input, "children") &&
-    Array.isArray(input.children)
-    ? input.children
-    : [];
+  try {
+    return Predicate.isObject(input) &&
+      Predicate.hasProperty(input, "children") &&
+      Array.isArray(input.children)
+      ? input.children
+      : [];
+  } catch {
+    return [];
+  }
 };
 
 interface WriteNodesOptions {
@@ -739,6 +858,8 @@ const writeNodes = (options: WriteNodesOptions) => {
       node,
       bindings,
       writer.typed?.has(node) === true,
+      writer.rawAttributes,
+      writer.restNamespaces,
       nextGeneratedPrefix,
       version,
     );
@@ -781,10 +902,10 @@ export const serializeDocument = (
   const optionResult = validateOptions(options);
   if (Result.isFailure(optionResult)) return Result.fail(optionResult.failure);
 
-  if (findElementCycle(documentElementRoots(document))) {
+  if (hasElementChildCycle(documentElementRoots(document))) {
     return failure("XML element content contains a cycle");
   }
-  const documentResult = decodeDocument(document);
+  const documentResult = decodeDocumentSafely(document);
   if (Result.isFailure(documentResult)) return Result.fail(documentResult.failure);
   const declarationResult = serializeDeclaration(document);
   if (Result.isFailure(declarationResult)) return declarationResult;
@@ -818,20 +939,21 @@ export const serializeFragment = (
   const namespacesResult = fragmentNamespaces(options, versionResult.success);
   if (Result.isFailure(namespacesResult)) return Result.fail(namespacesResult.failure);
 
-  if (findElementCycle(fragmentElementRoots(fragment))) {
+  if (hasElementChildCycle(fragmentElementRoots(fragment))) {
     return failure("XML element content contains a cycle");
   }
-  const fragmentResult = decodeFragment(fragment);
+  const fragmentResult = decodeFragmentSafely(fragment);
   if (Result.isFailure(fragmentResult)) return Result.fail(fragmentResult.failure);
 
   const bindings = new ActiveNamespaces();
   for (const binding of namespacesResult.success?.bindings ?? []) {
     bindings.enter(binding.prefix, binding.namespaceUri);
   }
-  return writeNodes({
+  const writeOptions = {
     nodes: fragment.children,
     version: versionResult.success,
     writer: optionResult.success,
     bindings,
-  });
+  };
+  return writeNodes(writeOptions);
 };

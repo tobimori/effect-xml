@@ -40,7 +40,7 @@ const validateOptions = (
       invalid("XML fragment option sortKeys must be a boolean", sortKeys, parseOptions),
     );
   }
-  const selectedVersion = version ?? "1.0";
+  const selectedVersion: "1.0" | "1.1" = version ?? "1.0";
   if (namespaces === undefined) return Effect.succeed(selectedVersion);
   return Effect.map(
     Effect.mapError(
