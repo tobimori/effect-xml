@@ -2,7 +2,12 @@ import { defineRule } from "@oxlint/plugins";
 
 import type { ESTree } from "@oxlint/plugins";
 
-function propertyName(property: ESTree.Property): string | undefined {
+type Property =
+  | ESTree.AssignmentTargetProperty
+  | ESTree.BindingProperty
+  | ESTree.ObjectProperty;
+
+function propertyName(property: Property): string | undefined {
   if (property.computed) return undefined;
   if (property.key.type === "Identifier") return property.key.name;
   if (property.key.type === "Literal" && typeof property.key.value === "string") {

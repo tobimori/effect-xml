@@ -2,10 +2,7 @@ import { defineRule } from "@oxlint/plugins";
 
 import type { ESTree, SourceCode } from "@oxlint/plugins";
 
-type FunctionImplementation =
-  | ESTree.ArrowFunctionExpression
-  | ESTree.FunctionDeclaration
-  | ESTree.FunctionExpression;
+type FunctionImplementation = ESTree.ArrowFunctionExpression | ESTree.Function;
 
 function hasRequiredReturnTypeComment(
   sourceCode: SourceCode,
@@ -23,8 +20,9 @@ function hasRequiredReturnTypeComment(
     ) {
       return true;
     }
-    if (current.parent.type === "Program") return false;
-    current = current.parent;
+    const parent: ESTree.Node | null = current.parent;
+    if (parent === null || parent.type === "Program") return false;
+    current = parent;
   }
 }
 

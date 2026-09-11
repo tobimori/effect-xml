@@ -218,11 +218,15 @@ const directKnownValueTypes = new Set([
   "ObjectExpression",
 ]);
 
+type StableDeclarator = ESTree.VariableDeclarator & {
+  readonly init: ESTree.Expression;
+};
+
 function isStableDeclarator(
   variable: Variable,
   declarator: ESTree.VariableDeclarator,
   boundary: ESTree.Node | null,
-): boolean {
+): declarator is StableDeclarator {
   return (
     declarator.parent.type === "VariableDeclaration" &&
     declarator.parent.kind === "const" &&
