@@ -15,15 +15,9 @@ export {
 } from "./ast/element.ts";
 export { Fragment, isFragment } from "./ast/fragment.ts";
 export { isSourceSpan, SourceSpan } from "./ast/location.ts";
-export { equalsName, isName, Name } from "./ast/name.ts";
-export {
-  getAttribute,
-  getChildren,
-  getText,
-  walk,
-  type ExpandedName,
-  type NameInput,
-} from "./ast/navigation.ts";
+export { equalsName, type ExpandedName } from "./ast/expanded-name.ts";
+export { isName, Name } from "./ast/name.ts";
+export { getAttribute, getChildren, getText, walk, type NameInput } from "./ast/navigation.ts";
 export { isNamespaceDeclaration, NamespaceDeclaration } from "./ast/namespace-declaration.ts";
 export { isNode, Node } from "./ast/node.ts";
 export { isProcessingInstruction, ProcessingInstruction } from "./ast/processing-instruction.ts";

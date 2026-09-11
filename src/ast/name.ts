@@ -14,11 +14,5 @@ export class Name extends Schema.TaggedClass<Name>("effect-xml/XmlNode/Name")("N
   }
 }
 
-/** Tests expanded-name identity without considering prefixes. */
-export const equalsName = (
-  first: Pick<Name, "localName" | "namespaceUri">,
-  second: Pick<Name, "localName" | "namespaceUri">,
-) => first.localName === second.localName && first.namespaceUri === second.namespaceUri;
-
 /** Refines a value through Effect's Name class recognition. */
 export const isName = Schema.is(Name);

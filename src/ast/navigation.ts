@@ -3,16 +3,13 @@ import * as Predicate from "effect/Predicate";
 
 import type { Attribute } from "./attribute.ts";
 import type { Element } from "./element.ts";
-import { equalsName, type Name } from "./name.ts";
+import { equalsName, type ExpandedName } from "./expanded-name.ts";
 import type { Node } from "./node.ts";
-
-/** The expanded-name fields used by namespace-aware navigation. */
-export type ExpandedName = Pick<Name, "localName" | "namespaceUri">;
 
 /** A natural unnamespaced local name or a structural expanded name. */
 export type NameInput = string | ExpandedName;
 
-const matchesName = (actual: Name, expected: NameInput) =>
+const matchesName = (actual: ExpandedName, expected: NameInput) =>
   Predicate.isString(expected)
     ? actual.localName === expected && actual.namespaceUri === undefined
     : equalsName(actual, expected);
