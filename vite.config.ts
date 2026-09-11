@@ -33,11 +33,11 @@ export default defineConfig({
     jsPlugins: [
       {
         name: "anti-slop",
-        specifier: "./tools/oxlint/anti-slop/index.ts",
+        specifier: "./tools/oxlint/index.ts",
       },
       {
         name: "anti-slop-effect",
-        specifier: "./tools/oxlint/anti-slop/effect/index.ts",
+        specifier: "./tools/oxlint/effect/index.ts",
       },
     ],
     options: {

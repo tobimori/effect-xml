@@ -1,4 +1,5 @@
 .docs/
+.prototype/
 .repos/
 node_modules/
 dist/
