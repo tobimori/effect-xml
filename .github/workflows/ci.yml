@@ -39,7 +39,7 @@ jobs:
         run: vp run check:package
 
       - name: Create package tarball
-        run: pnpm pack --pack-destination package-artifacts
+        run: vp pm pack --pack-destination package-artifacts
 
       - name: Upload package tarball
         uses: actions/upload-artifact@v7
