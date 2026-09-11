@@ -15,7 +15,7 @@ const ignoredPaths = [
   ".roo/**",
   ".windsurf/**",
   "dist/**",
-  "tools/oxlint/anti-slop/**",
+  "tools/oxlint/**",
 ];
 
 export default defineConfig({
