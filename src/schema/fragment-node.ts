@@ -4,7 +4,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 
-import { Fragment as AstFragment } from "../ast/fragment.ts";
+import { Fragment as AstFragment, FragmentSchema as AstFragmentSchema } from "../ast/fragment.ts";
 import { parseFragment, type FragmentParseOptions } from "../parser/parser.ts";
 import { serializeFragment, type FragmentSerializeOptions } from "../serializer/serializer.ts";
 import {
@@ -26,7 +26,7 @@ const makeFragmentNode = (
 ): Schema.Codec<AstFragment, string> => {
   const codec = Schema.String.pipe(
     Schema.decodeTo(
-      Schema.toType(AstFragment),
+      Schema.toType(AstFragmentSchema),
       SchemaTransformation.transformEffect({
         decode: (source) =>
           Effect.flatMap(CurrentDecodeState, (state) => {

@@ -4,7 +4,7 @@ import * as SchemaIssue from "effect/SchemaIssue";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 
 import { isComment } from "../ast/comment.ts";
-import { isElement, type Child } from "../ast/element.ts";
+import { isChild, isElement, type Child } from "../ast/element.ts";
 import { isProcessingInstruction } from "../ast/processing-instruction.ts";
 import { isCData, isText } from "../ast/text.ts";
 import { hasExpandedName, resolvedCodecName } from "./codec-name.ts";
@@ -18,7 +18,6 @@ import {
   type SingleChildPlacement,
   type UnionMember,
 } from "./metadata.ts";
-import { isOrderedChild } from "./ordered-content.ts";
 
 type UnionMembers = ReadonlyArray<UnionMember>;
 
@@ -41,7 +40,7 @@ const matchesConcretePlacement = (
 /** A small structural precondition which leaves the original member as the composed Type AST. */
 const placementGuard = (placement: SingleChildPlacement) =>
   Schema.declareConstructor<Child>()([], () => (input, ast, options) => {
-    if (!isOrderedChild(input)) {
+    if (!isChild(input)) {
       return Effect.fail(new SchemaIssue.InvalidType(ast, input, options));
     }
     return Effect.flatMap(PlacementBindings, (bindings) => {
@@ -86,7 +85,7 @@ export const Union = <const Members extends UnionMembers>(
     }
     placements.push(placement);
   }
-  const raw = encoded(isOrderedChild, { kind: "union", members: placements });
+  const raw = encoded(isChild, { kind: "union", members: placements });
   const guarded = members.map((member, index) => prependPlacementGuard(member, placements[index]!));
   return raw.pipe(
     Schema.decodeTo(

@@ -2,23 +2,10 @@ import * as Effect from "effect/Effect";
 import type * as SchemaAST from "effect/SchemaAST";
 import * as SchemaIssue from "effect/SchemaIssue";
 
-import { isComment } from "../ast/comment.ts";
-import { type Child, isElement } from "../ast/element.ts";
-import { isProcessingInstruction } from "../ast/processing-instruction.ts";
+import type { Child } from "../ast/element.ts";
 import { CData, isCData, isText, Text } from "../ast/text.ts";
 import type { DecodeState } from "./context.ts";
 import { failIssues } from "./issue.ts";
-
-/** Recognizes an XML child without recursively validating its descendants. */
-export const isOrderedChild = (
-  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- This is the ordered XML child recognition boundary.
-  input: unknown,
-): input is Child =>
-  isText(input) ||
-  isCData(input) ||
-  isComment(input) ||
-  isProcessingInstruction(input) ||
-  isElement(input);
 
 const mergedText = (first: Text, value: string) =>
   first.span === undefined ? new Text({ value }) : new Text({ value, span: first.span });

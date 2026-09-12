@@ -4,7 +4,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 
-import { Document as AstDocument } from "../ast/document.ts";
+import { Document as AstDocument, DocumentSchema as AstDocumentSchema } from "../ast/document.ts";
 import { parseDocument, type ParseOptions } from "../parser/parser.ts";
 import { serializeDocument, type SerializeOptions } from "../serializer/serializer.ts";
 import {
@@ -30,7 +30,7 @@ const makeDocumentNode = (
   const source = encodedString({ kind: "document" });
   const codec = source.pipe(
     Schema.decodeTo(
-      Schema.toType(AstDocument),
+      Schema.toType(AstDocumentSchema),
       SchemaTransformation.transformEffect({
         decode: (source) =>
           Effect.flatMap(CurrentDecodeState, (state) => {

@@ -49,8 +49,8 @@ const validateOptions = (
   }
   const selectedVersion: "1.0" | "1.1" = version ?? "1.0";
   if (namespaces === undefined) return Effect.succeed(selectedVersion);
-  return Effect.map(
-    Effect.mapError(
+  return Effect.mapEager(
+    Effect.mapErrorEager(
       Schema.encodeUnknownEffect(NamespaceContext)(namespaces),
       (error) => error.issue,
     ),
@@ -113,7 +113,7 @@ export const Fragment = <S extends FragmentContent>(
                 invalid("Expected an encoded XML child sequence", encoded, parseOptions),
               );
             }
-            return Effect.map(
+            return Effect.mapEager(
               validateOrderedChildren(encoded, content.ast, parseOptions),
               (children) => new AstFragment({ children }),
             );
@@ -127,7 +127,7 @@ export const Fragment = <S extends FragmentContent>(
             );
           }
           const children: ReadonlyArray<Child> = [encoded];
-          return Effect.map(
+          return Effect.mapEager(
             validateOrderedChildren(children, content.ast, parseOptions),
             (valid) => new AstFragment({ children: valid }),
           );
@@ -139,10 +139,13 @@ export const Fragment = <S extends FragmentContent>(
   return delegateRequired(
     codec,
     (effect, parseOptions) =>
-      withXmlDecodeState(Effect.andThen(validateOptions(options, parseOptions), effect), true),
+      withXmlDecodeState(
+        Effect.flatMapEager(validateOptions(options, parseOptions), () => effect),
+        true,
+      ),
     (effect, parseOptions) =>
       Effect.suspend(() =>
-        Effect.flatMap(validateOptions(options, parseOptions), (version) =>
+        Effect.flatMapEager(validateOptions(options, parseOptions), (version) =>
           Effect.provideService(effect, CurrentEncodeState, {
             structured: new WeakSet(),
             typed: new WeakSet(),

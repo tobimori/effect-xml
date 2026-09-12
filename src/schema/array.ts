@@ -3,13 +3,10 @@ import * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 
+import { isChild } from "../ast/element.ts";
 import { CurrentDecodeState } from "./context.ts";
 import { encoded, getPlacement, isSingleChildPlacement, type ArrayItem } from "./metadata.ts";
-import {
-  canonicalizeOrderedChildren,
-  isOrderedChild,
-  validateOrderedChildren,
-} from "./ordered-content.ts";
+import { canonicalizeOrderedChildren, validateOrderedChildren } from "./ordered-content.ts";
 import { guardDescent, guardProduct } from "./path-guard.ts";
 
 type ArrayItemInput<S extends ArrayItem> = S["~encoded.optionality"] extends "optional" ? never : S;
@@ -33,7 +30,7 @@ export const Array = <S extends ArrayItem>(
   const raw = encoded(
     // oxlint-disable-next-line anti-slop/no-unknown-parameters -- This is the ordered child-array boundary.
     (input): input is ReadonlyArray<S["Encoded"]> =>
-      globalThis.Array.isArray(input) && input.every(isOrderedChild),
+      globalThis.Array.isArray(input) && input.every(isChild),
     { kind: "array", item: placement },
   );
   return raw.pipe(

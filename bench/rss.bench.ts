@@ -29,7 +29,7 @@ const Rss = Xml.Document(
 );
 
 const source = `<rss version="2.0"><channel><title>News &amp; updates</title>${Array.from(
-  { length: 100 },
+  { length: 10000 },
   (_, index) =>
     "<item>" +
     `<title>Item ${index}</title>` +
@@ -51,17 +51,24 @@ const feed = decodeRss(source);
 
 expect(raw.root.name.localName).toBe("rss");
 expect(feed.channel.title).toBe("News & updates");
-expect(feed.channel.items).toHaveLength(100);
+expect(feed.channel.items).toHaveLength(10000);
 expect(decodeRss(encodeRaw(raw))).toEqual(feed);
 expect(decodeRss(encodeRss(feed))).toEqual(feed);
 
-describe("public RSS codecs with 100 items", () => {
+const runOptions = {
+  iterations: 6,
+  time: 0,
+  warmupIterations: 1,
+  warmupTime: 0,
+};
+
+describe("public RSS codecs with 10,000 items", () => {
   test("parse to raw AST", async ({ bench }) => {
     let result = raw;
 
     await bench("parse", () => {
       result = decodeRaw(source);
-    }).run();
+    }).run(runOptions);
 
     expect(result.root.name.localName).toBe("rss");
     expect(result.root.children).toHaveLength(1);
@@ -72,7 +79,7 @@ describe("public RSS codecs with 100 items", () => {
 
     await bench("serialize", () => {
       result = encodeRaw(raw);
-    }).run();
+    }).run(runOptions);
 
     expect(decodeRss(result)).toEqual(feed);
   });
@@ -82,7 +89,7 @@ describe("public RSS codecs with 100 items", () => {
 
     await bench("roundtrip", () => {
       result = encodeRss(decodeRss(source));
-    }).run();
+    }).run(runOptions);
 
     expect(decodeRss(result)).toEqual(feed);
   });

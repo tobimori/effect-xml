@@ -6,7 +6,7 @@ import type * as SchemaAST from "effect/SchemaAST";
 import * as SchemaIssue from "effect/SchemaIssue";
 import * as SchemaParser from "effect/SchemaParser";
 
-import { Attribute, isAttribute, type Attribute as AttributeNode } from "../ast/attribute.ts";
+import { AttributeSchema, isAttribute, type Attribute as AttributeNode } from "../ast/attribute.ts";
 import { isComment } from "../ast/comment.ts";
 import { hasElementChildCycle } from "../ast/element-cycle.ts";
 import { ChildNode, isElement, type Child, type Element } from "../ast/element.ts";
@@ -73,7 +73,7 @@ export const snapshotRestNamespaces = (
 };
 
 const RestFields = Schema.Struct({
-  attributes: Schema.Array(Attribute),
+  attributes: Schema.Array(AttributeSchema),
   children: Schema.Array(ChildNode),
   namespaces: NamespaceContext,
 });

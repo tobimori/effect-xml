@@ -3,16 +3,16 @@ import * as Result from "effect/Result";
 import * as SchemaIssue from "effect/SchemaIssue";
 import * as SchemaParser from "effect/SchemaParser";
 
-import type { Attribute } from "../ast/attribute.ts";
+import { Attribute } from "../ast/attribute.ts";
+import { Comment, isComment } from "../ast/comment.ts";
+import { Declaration } from "../ast/declaration.ts";
 import { Document, type Misc } from "../ast/document.ts";
-import { hasElementChildCycle } from "../ast/element-cycle.ts";
-import { isElement, type Child, type Element } from "../ast/element.ts";
+import { Element, isElement, type Child } from "../ast/element.ts";
 import { Fragment as AstFragment } from "../ast/fragment.ts";
-import type { Name } from "../ast/name.ts";
+import { Name } from "../ast/name.ts";
 import { NamespaceDeclaration } from "../ast/namespace-declaration.ts";
-import { isProcessingInstruction } from "../ast/processing-instruction.ts";
-import { isCData, isText } from "../ast/text.ts";
-import { isComment } from "../ast/comment.ts";
+import { isProcessingInstruction, ProcessingInstruction } from "../ast/processing-instruction.ts";
+import { CData, isCData, isText, Text } from "../ast/text.ts";
 import { NamespaceContext } from "../namespace/context.ts";
 import { ActiveNamespaces, type NamespaceUndo } from "../namespace/prefix.ts";
 import { validateBinding, xmlNamespace, xmlnsNamespace } from "../namespace/validation.ts";
@@ -56,27 +56,278 @@ interface NamespaceExitAction {
 
 type Action = NodeAction | OutputAction | NamespaceExitAction;
 
-const decodeDocument = SchemaParser.decodeUnknownResult(Document);
-const decodeFragment = SchemaParser.decodeUnknownResult(AstFragment);
 const decodeNamespaceContext = SchemaParser.decodeUnknownResult(NamespaceContext);
 
 const invalid = (message: string) => new SchemaIssue.InvalidValue({ message });
 
 const failure = (message: string) => Result.fail<SchemaIssue.Issue>(invalid(message));
 
-const decodeDocumentSafely = (document: Document) => {
+/**
+ * Fast validation covers the AST schemas' storage rules only. The writer below
+ * remains responsible for XML grammar, characters, and namespace semantics.
+ */
+interface SpanValue {
+  readonly start: number;
+  readonly end: number;
+}
+
+const validateSpan = (span: SpanValue | undefined, context: string) => {
+  const input: unknown = span;
+  if (
+    !Predicate.isObject(input) ||
+    !Predicate.hasProperty(input, "start") ||
+    !Predicate.isNumber(input.start) ||
+    !Number.isSafeInteger(input.start) ||
+    input.start < 0 ||
+    !Predicate.hasProperty(input, "end") ||
+    !Predicate.isNumber(input.end) ||
+    !Number.isSafeInteger(input.end) ||
+    input.end < 0
+  ) {
+    return invalid(`${context} span must contain nonnegative safe-integer start and end offsets`);
+  }
+  if (input.end < input.start) return invalid(`${context} span end must not precede start`);
+  return undefined;
+};
+
+type SpanOwner =
+  | Attribute
+  | CData
+  | Comment
+  | Declaration
+  | Document
+  | Element
+  | AstFragment
+  | Name
+  | NamespaceDeclaration
+  | ProcessingInstruction
+  | Text;
+
+const validateOptionalSpan = (value: SpanOwner, span: SpanValue | undefined, context: string) =>
+  Predicate.hasProperty(value, "span") ? validateSpan(span, context) : undefined;
+
+const validateNameStructure = (name: Name, context: string) => {
+  if (!(name instanceof Name) || !Predicate.isTagged(name, "Name")) {
+    return invalid(`${context} name must be a Name node`);
+  }
+  if (!Predicate.isString(name.localName)) return invalid(`${context} local name must be a string`);
+  if (Predicate.hasProperty(name, "namespaceUri") && !Predicate.isString(name.namespaceUri)) {
+    return invalid(`${context} namespace URI must be a string when present`);
+  }
+  if (Predicate.hasProperty(name, "prefix") && !Predicate.isString(name.prefix)) {
+    return invalid(`${context} prefix must be a string when present`);
+  }
+  return validateOptionalSpan(name, name.span, `${context} name`);
+};
+
+const validateNamespaceDeclarationStructure = (declaration: NamespaceDeclaration) => {
+  if (
+    !(declaration instanceof NamespaceDeclaration) ||
+    !Predicate.isTagged(declaration, "NamespaceDeclaration")
+  ) {
+    return invalid("Element namespace declarations must be NamespaceDeclaration nodes");
+  }
+  if (Predicate.hasProperty(declaration, "prefix") && !Predicate.isString(declaration.prefix)) {
+    return invalid("Namespace declaration prefix must be a string when present");
+  }
+  if (!Predicate.isString(declaration.namespaceUri)) {
+    return invalid("Namespace declaration URI must be a string");
+  }
+  return validateOptionalSpan(declaration, declaration.span, "Namespace declaration");
+};
+
+const validateAttributeStructure = (attribute: Attribute) => {
+  if (!(attribute instanceof Attribute) || !Predicate.isTagged(attribute, "Attribute")) {
+    return invalid("Element attributes must be Attribute nodes");
+  }
+  const nameIssue = validateNameStructure(attribute.name, "Attribute");
+  if (nameIssue !== undefined) return nameIssue;
+  if (!Predicate.isString(attribute.value)) return invalid("Attribute value must be a string");
+  return validateOptionalSpan(attribute, attribute.span, "Attribute");
+};
+
+const validateCommentStructure = (comment: Comment) => {
+  if (!Predicate.isTagged(comment, "Comment")) return invalid("Comment node tag is invalid");
+  if (!Predicate.isString(comment.value)) return invalid("Comment value must be a string");
+  return validateOptionalSpan(comment, comment.span, "Comment");
+};
+
+const validateProcessingInstructionStructure = (instruction: ProcessingInstruction) => {
+  if (!Predicate.isTagged(instruction, "ProcessingInstruction")) {
+    return invalid("Processing instruction node tag is invalid");
+  }
+  if (!Predicate.isString(instruction.target)) {
+    return invalid("Processing instruction target must be a string");
+  }
+  if (!Predicate.isString(instruction.value)) {
+    return invalid("Processing instruction value must be a string");
+  }
+  return validateOptionalSpan(instruction, instruction.span, "Processing instruction");
+};
+
+const validateTextStructure = (text: Text) => {
+  if (!Predicate.isTagged(text, "Text")) return invalid("Text node tag is invalid");
+  if (!Predicate.isString(text.value)) return invalid("Text value must be a string");
+  return validateOptionalSpan(text, text.span, "Text");
+};
+
+const validateCDataStructure = (cdata: CData) => {
+  if (!Predicate.isTagged(cdata, "CData")) return invalid("CDATA node tag is invalid");
+  if (!Predicate.isString(cdata.value)) return invalid("CDATA value must be a string");
+  return validateOptionalSpan(cdata, cdata.span, "CDATA");
+};
+
+const validateMiscStructure = (node: Misc) => {
+  if (node instanceof Comment) return validateCommentStructure(node);
+  if (node instanceof ProcessingInstruction) return validateProcessingInstructionStructure(node);
+  return invalid(
+    "Document prolog and epilog entries must be Comment or ProcessingInstruction nodes",
+  );
+};
+
+interface NodeVisit {
+  readonly kind: "node";
+  readonly node: Child;
+}
+
+interface ElementExit {
+  readonly kind: "exit";
+  readonly element: Element;
+}
+
+type StructureAction = NodeVisit | ElementExit;
+
+/** Validates recursive content without constructing replacement nodes or using the JS call stack. */
+const validateChildrenStructure = (children: ReadonlyArray<Child>) => {
+  const actions: Array<StructureAction> = [];
+  for (let index = children.length - 1; index >= 0; index--) {
+    actions.push({ kind: "node", node: children[index]! });
+  }
+
+  const states = new WeakMap<Element, "active" | "complete">();
+  while (actions.length > 0) {
+    const action = actions.pop()!;
+    if (action.kind === "exit") {
+      states.set(action.element, "complete");
+      continue;
+    }
+
+    const node = action.node;
+    if (node instanceof Text) {
+      const issue = validateTextStructure(node);
+      if (issue !== undefined) return issue;
+      continue;
+    }
+    if (node instanceof CData) {
+      const issue = validateCDataStructure(node);
+      if (issue !== undefined) return issue;
+      continue;
+    }
+    if (node instanceof Comment) {
+      const issue = validateCommentStructure(node);
+      if (issue !== undefined) return issue;
+      continue;
+    }
+    if (node instanceof ProcessingInstruction) {
+      const issue = validateProcessingInstructionStructure(node);
+      if (issue !== undefined) return issue;
+      continue;
+    }
+    if (!(node instanceof Element) || !Predicate.isTagged(node, "Element")) {
+      return invalid("Element children must be XML child nodes");
+    }
+
+    const state = states.get(node);
+    if (state === "active") return invalid("XML element content contains a cycle");
+    if (state === "complete") continue;
+
+    const nameIssue = validateNameStructure(node.name, "Element");
+    if (nameIssue !== undefined) return nameIssue;
+    const spanIssue = validateOptionalSpan(node, node.span, "Element");
+    if (spanIssue !== undefined) return spanIssue;
+    if (!Array.isArray(node.namespaceDeclarations)) {
+      return invalid("Element namespaceDeclarations must be an array");
+    }
+    for (const declaration of node.namespaceDeclarations) {
+      const issue = validateNamespaceDeclarationStructure(declaration);
+      if (issue !== undefined) return issue;
+    }
+    if (!Array.isArray(node.attributes)) return invalid("Element attributes must be an array");
+    for (const attribute of node.attributes) {
+      const issue = validateAttributeStructure(attribute);
+      if (issue !== undefined) return issue;
+    }
+    if (!Array.isArray(node.children)) return invalid("Element children must be an array");
+
+    states.set(node, "active");
+    actions.push({ kind: "exit", element: node });
+    for (let index = node.children.length - 1; index >= 0; index--) {
+      actions.push({ kind: "node", node: node.children[index]! });
+    }
+  }
+  return undefined;
+};
+
+const validateDeclarationStructure = (declaration: Declaration) => {
+  if (!(declaration instanceof Declaration) || !Predicate.isTagged(declaration, "Declaration")) {
+    return invalid("Document declaration must be a Declaration node");
+  }
+  if (declaration.version !== "1.0" && declaration.version !== "1.1") {
+    return invalid('XML declaration version must be "1.0" or "1.1"');
+  }
+  if (Predicate.hasProperty(declaration, "encoding") && !Predicate.isString(declaration.encoding)) {
+    return invalid("XML declaration encoding must be a string when present");
+  }
+  if (
+    Predicate.hasProperty(declaration, "standalone") &&
+    declaration.standalone !== "yes" &&
+    declaration.standalone !== "no"
+  ) {
+    return invalid('XML declaration standalone must be "yes" or "no" when present');
+  }
+  return validateOptionalSpan(declaration, declaration.span, "XML declaration");
+};
+
+const validateDocumentStructure = (document: Document) => {
   try {
-    return decodeDocument(document);
+    if (!(document instanceof Document) || !Predicate.isTagged(document, "Document")) {
+      return invalid("Invalid XML document");
+    }
+    if (Predicate.hasProperty(document, "declaration")) {
+      const issue = validateDeclarationStructure(document.declaration!);
+      if (issue !== undefined) return issue;
+    }
+    if (!Array.isArray(document.prolog)) return invalid("Document prolog must be an array");
+    for (const node of document.prolog) {
+      const issue = validateMiscStructure(node);
+      if (issue !== undefined) return issue;
+    }
+    if (!(document.root instanceof Element))
+      return invalid("Document root must be an Element node");
+    if (!Array.isArray(document.epilog)) return invalid("Document epilog must be an array");
+    for (const node of document.epilog) {
+      const issue = validateMiscStructure(node);
+      if (issue !== undefined) return issue;
+    }
+    const spanIssue = validateOptionalSpan(document, document.span, "Document");
+    if (spanIssue !== undefined) return spanIssue;
+    return validateChildrenStructure([document.root]);
   } catch {
-    return failure("Invalid XML document");
+    return invalid("Invalid XML document");
   }
 };
 
-const decodeFragmentSafely = (fragment: AstFragment) => {
+const validateFragmentStructure = (fragment: AstFragment) => {
   try {
-    return decodeFragment(fragment);
+    if (!(fragment instanceof AstFragment) || !Predicate.isTagged(fragment, "Fragment")) {
+      return invalid("Invalid XML fragment");
+    }
+    if (!Array.isArray(fragment.children)) return invalid("Fragment children must be an array");
+    const spanIssue = validateOptionalSpan(fragment, fragment.span, "Fragment");
+    if (spanIssue !== undefined) return spanIssue;
+    return validateChildrenStructure(fragment.children);
   } catch {
-    return failure("Invalid XML fragment");
+    return invalid("Invalid XML fragment");
   }
 };
 
@@ -103,14 +354,18 @@ const xml11NeedsReference = (codePoint: number) =>
   isXml11RestrictedChar(codePoint) || codePoint === 0x85 || codePoint === 0x2028;
 
 const escapeText = (value: string, version: XmlVersion) => {
-  const characterIssue = invalidCharacter(value, "Text", version);
-  if (characterIssue !== undefined) return Result.fail(characterIssue);
-
   const output: Array<string> = [];
   let offset = 0;
   let literalStart = 0;
   for (const character of value) {
     const codePoint = character.codePointAt(0)!;
+    if (!isXmlChar(codePoint, version)) {
+      return Result.fail(
+        invalid(
+          `Text contains an invalid XML ${version} character ${codePointLabel(codePoint)} at UTF-16 offset ${offset}`,
+        ),
+      );
+    }
     let replacement: string | undefined;
     if (character === "&") replacement = "&amp;";
     else if (character === "<") replacement = "&lt;";
@@ -129,14 +384,18 @@ const escapeText = (value: string, version: XmlVersion) => {
 };
 
 const escapeAttribute = (value: string, context: string, version: XmlVersion) => {
-  const characterIssue = invalidCharacter(value, context, version);
-  if (characterIssue !== undefined) return Result.fail(characterIssue);
-
   const output: Array<string> = [];
   let offset = 0;
   let literalStart = 0;
   for (const character of value) {
     const codePoint = character.codePointAt(0)!;
+    if (!isXmlChar(codePoint, version)) {
+      return Result.fail(
+        invalid(
+          `${context} contains an invalid XML ${version} character ${codePointLabel(codePoint)} at UTF-16 offset ${offset}`,
+        ),
+      );
+    }
     let replacement: string | undefined;
     if (character === "&") replacement = "&amp;";
     else if (character === "<") replacement = "&lt;";
@@ -776,28 +1035,6 @@ const fragmentNamespaces = (options: FragmentSerializeOptions | undefined, versi
   return Result.succeed<NamespaceContext | undefined>(contextResult.success);
 };
 
-const documentElementRoots = (value: Document) => {
-  const input: unknown = value;
-  try {
-    return Predicate.isObject(input) && Predicate.hasProperty(input, "root") ? [input.root] : [];
-  } catch {
-    return [];
-  }
-};
-
-const fragmentElementRoots = (value: AstFragment) => {
-  const input: unknown = value;
-  try {
-    return Predicate.isObject(input) &&
-      Predicate.hasProperty(input, "children") &&
-      Array.isArray(input.children)
-      ? input.children
-      : [];
-  } catch {
-    return [];
-  }
-};
-
 interface WriteNodesOptions {
   readonly nodes: ReadonlyArray<Child | Misc>;
   readonly version: XmlVersion;
@@ -901,11 +1138,8 @@ export const serializeDocument = (
   const optionResult = validateOptions(options);
   if (Result.isFailure(optionResult)) return Result.fail(optionResult.failure);
 
-  if (hasElementChildCycle(documentElementRoots(document))) {
-    return failure("XML element content contains a cycle");
-  }
-  const documentResult = decodeDocumentSafely(document);
-  if (Result.isFailure(documentResult)) return Result.fail(documentResult.failure);
+  const structureIssue = validateDocumentStructure(document);
+  if (structureIssue !== undefined) return Result.fail(structureIssue);
   const declarationResult = serializeDeclaration(document);
   if (Result.isFailure(declarationResult)) return declarationResult;
   const version = document.declaration?.version ?? "1.0";
@@ -937,11 +1171,8 @@ export const serializeFragment = (
   const namespacesResult = fragmentNamespaces(options, versionResult.success);
   if (Result.isFailure(namespacesResult)) return Result.fail(namespacesResult.failure);
 
-  if (hasElementChildCycle(fragmentElementRoots(fragment))) {
-    return failure("XML element content contains a cycle");
-  }
-  const fragmentResult = decodeFragmentSafely(fragment);
-  if (Result.isFailure(fragmentResult)) return Result.fail(fragmentResult.failure);
+  const structureIssue = validateFragmentStructure(fragment);
+  if (structureIssue !== undefined) return Result.fail(structureIssue);
 
   const bindings = new ActiveNamespaces();
   for (const binding of namespacesResult.success?.bindings ?? []) {

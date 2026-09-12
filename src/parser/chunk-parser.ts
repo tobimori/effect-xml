@@ -227,8 +227,14 @@ class Cursor {
   codeUnit(relativeOffset = 0) {
     this.ensure(relativeOffset + 1);
     if (relativeOffset >= this.available) return undefined;
+
     let segmentIndex = this.segmentIndex;
     let offset = this.segmentOffset + relativeOffset;
+    const current = this.segments[segmentIndex];
+    if (current !== undefined && offset < current.length) return current.charCodeAt(offset);
+
+    if (current !== undefined) offset -= current.length;
+    segmentIndex += 1;
     while (true) {
       const segment = this.segments[segmentIndex];
       if (segment === undefined) return undefined;
@@ -251,7 +257,6 @@ class Cursor {
   }
 
   validCodePoint() {
-    const mark = this.mark();
     const codePoint = this.codePoint();
     if (
       codePoint === undefined ||
@@ -260,7 +265,10 @@ class Cursor {
     ) {
       const display =
         codePoint === undefined ? "unknown" : `U+${codePoint.toString(16).toUpperCase()}`;
-      this.fail(`Character ${display} is not permitted literally by XML ${this.version}`, mark);
+      this.fail(
+        `Character ${display} is not permitted literally by XML ${this.version}`,
+        this.mark(),
+      );
     }
     return codePoint;
   }
@@ -271,6 +279,37 @@ class Cursor {
     );
   }
 
+  private advanceCodePoint(codePoint: number) {
+    const width = codePoint > 0xffff ? 2 : 1;
+    for (let unit = 0; unit < width; unit++) {
+      const code = this.codeUnit();
+      if (code === undefined) this.fail("Unexpected end of XML input");
+      this.segmentOffset += 1;
+      this.available -= 1;
+      this.index += 1;
+      if (code === 0xd) {
+        this.line += 1;
+        this.column = 1;
+        this.previousWasCarriageReturn = true;
+      } else if (code === 0xa || (this.version === "1.1" && (code === 0x85 || code === 0x2028))) {
+        if (!this.previousWasCarriageReturn || code === 0x2028) this.line += 1;
+        this.column = 1;
+        this.previousWasCarriageReturn = false;
+      } else {
+        this.column += 1;
+        this.previousWasCarriageReturn = false;
+      }
+      const segment = this.segments[this.segmentIndex];
+      if (segment !== undefined && this.segmentOffset === segment.length) {
+        this.segments[this.segmentIndex] = "";
+        this.segmentIndex += 1;
+        this.segmentOffset = 0;
+        this.compact();
+      }
+    }
+    return width;
+  }
+
   advance(count = 1) {
     let advanced = 0;
     while (advanced < count) {
@@ -279,34 +318,12 @@ class Cursor {
       if (advanced + width > count) {
         this.fail("Cannot split a Unicode surrogate pair");
       }
-      for (let unit = 0; unit < width; unit++) {
-        const code = this.codeUnit();
-        if (code === undefined) this.fail("Unexpected end of XML input");
-        this.segmentOffset += 1;
-        this.available -= 1;
-        this.index += 1;
-        advanced += 1;
-        if (code === 0xd) {
-          this.line += 1;
-          this.column = 1;
-          this.previousWasCarriageReturn = true;
-        } else if (code === 0xa || (this.version === "1.1" && (code === 0x85 || code === 0x2028))) {
-          if (!this.previousWasCarriageReturn || code === 0x2028) this.line += 1;
-          this.column = 1;
-          this.previousWasCarriageReturn = false;
-        } else {
-          this.column += 1;
-          this.previousWasCarriageReturn = false;
-        }
-        const segment = this.segments[this.segmentIndex];
-        if (segment !== undefined && this.segmentOffset === segment.length) {
-          this.segments[this.segmentIndex] = "";
-          this.segmentIndex += 1;
-          this.segmentOffset = 0;
-          this.compact();
-        }
-      }
+      advanced += this.advanceCodePoint(codePoint);
     }
+  }
+
+  advanceValidated(codePoint: number) {
+    this.advanceCodePoint(codePoint);
   }
 
   skipWhitespace() {
@@ -513,12 +530,13 @@ class Parser {
     this.nodeCount += 1;
   }
 
-  private reserveText(length: number, mark: Mark) {
+  private reserveText(length: number, mark?: Mark) {
     const limit = this.limits?.textLength;
-    if (limit !== undefined && length > limit - this.textLength) {
+    if (limit === undefined) return;
+    if (length > limit - this.textLength) {
       this.cursor.fail(
         `Parser textLength limit of ${limit} decoded UTF-16 code units was exceeded`,
-        mark,
+        mark ?? this.cursor.mark(),
       );
     }
     this.textLength += length;
@@ -526,11 +544,10 @@ class Parser {
 
   private appendLiteral(builder: StringBuilder, attribute: boolean) {
     const cursor = this.cursor;
-    const mark = cursor.mark();
     const codePoint = cursor.validCodePoint();
     if (codePoint === 0xd) {
-      this.reserveText(1, mark);
-      cursor.advance();
+      this.reserveText(1);
+      cursor.advanceValidated(codePoint);
       if (cursor.codeUnit() === 0xa || (cursor.version === "1.1" && cursor.codeUnit() === 0x85)) {
         cursor.advance();
       }
@@ -538,15 +555,15 @@ class Parser {
       return;
     }
     if (cursor.version === "1.1" && (codePoint === 0x85 || codePoint === 0x2028)) {
-      this.reserveText(1, mark);
-      cursor.advance();
+      this.reserveText(1);
+      cursor.advanceValidated(codePoint);
       builder.append(attribute ? " " : "\n");
       return;
     }
     const value =
       attribute && (codePoint === 0xa || codePoint === 0x9) ? " " : String.fromCodePoint(codePoint);
-    this.reserveText(value.length, mark);
-    cursor.advance(codePoint > 0xffff ? 2 : 1);
+    this.reserveText(value.length);
+    cursor.advanceValidated(codePoint);
     builder.append(value);
   }
 
@@ -656,7 +673,7 @@ class Parser {
     while (!cursor.done && cursor.codeUnit() !== quote) {
       const codePoint = cursor.validCodePoint();
       builder.append(String.fromCodePoint(codePoint));
-      cursor.advance(codePoint > 0xffff ? 2 : 1);
+      cursor.advanceValidated(codePoint);
     }
     if (cursor.done) cursor.fail("Unterminated quoted value");
     cursor.advance();
@@ -1031,7 +1048,7 @@ class Parser {
         if (!cursor.isWhitespaceCode(codePoint)) {
           cursor.fail("Character data is not allowed outside the document root");
         }
-        cursor.advance();
+        cursor.advanceValidated(codePoint);
       }
       return;
     }

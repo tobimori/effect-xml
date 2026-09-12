@@ -114,7 +114,7 @@ export const Document = <S extends DocumentRoot>(
             );
           }
           const fields = { prolog: [], root: element, epilog: [] };
-          return Effect.map(declarationFromOptions(options, parseOptions), (declaration) =>
+          return Effect.mapEager(declarationFromOptions(options, parseOptions), (declaration) =>
             declaration === undefined
               ? new AstDocument(fields)
               : new AstDocument({ ...fields, declaration }),
@@ -129,7 +129,7 @@ export const Document = <S extends DocumentRoot>(
     (effect) => withDocumentDecodeState(effect, true),
     (effect, parseOptions) =>
       Effect.suspend(() =>
-        Effect.flatMap(declarationFromOptions(options, parseOptions), () =>
+        Effect.flatMapEager(declarationFromOptions(options, parseOptions), () =>
           Effect.provideService(effect, CurrentEncodeState, {
             structured: new WeakSet(),
             typed: new WeakSet(),

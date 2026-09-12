@@ -232,8 +232,7 @@ const makeElementCodec = <S extends Schema.Constraint>(
       SchemaTransformation.transformEffect({
         decode: (element, options) =>
           Effect.flatMap(resolveName(explicitName, token), (name) =>
-            Effect.andThen(
-              checkName(element, name, options),
+            Effect.flatMapEager(checkName(element, name, options), () =>
               Effect.flatMap(CurrentXmlElementDecodeContext, (context) =>
                 decodeContent(element, options, raw.ast, context?.preservesSpace ?? false),
               ),
@@ -391,9 +390,8 @@ const makeElement = <S extends Schema.Constraint>(
                 .map((child) =>
                   unexpectedContentIssue(describeChild(child), child, options, state),
                 );
-              return Effect.andThen(
-                Effect.andThen(
-                  checkOrderedAttributes(element, options, ast, state),
+              return Effect.flatMapEager(
+                Effect.flatMapEager(checkOrderedAttributes(element, options, ast, state), () =>
                   deferElementIssues(ast, issues, element, options),
                 ),
                 () => {
@@ -403,7 +401,7 @@ const makeElement = <S extends Schema.Constraint>(
               );
             }
           }
-          return Effect.andThen(checkOrderedAttributes(element, options, ast, state), () => {
+          return Effect.flatMapEager(checkOrderedAttributes(element, options, ast, state), () => {
             registerOrderedChildren(state, element, children);
             return Effect.succeed(children as S["Encoded"]);
           });
@@ -418,10 +416,13 @@ const makeElement = <S extends Schema.Constraint>(
             ),
           );
         }
-        return Effect.map(validateOrderedChildren(value, content.ast, options), (children) => ({
-          attributes: [],
-          children,
-        }));
+        return Effect.mapEager(
+          validateOrderedChildren(value, content.ast, options),
+          (children) => ({
+            attributes: [],
+            children,
+          }),
+        );
       },
     );
   }
@@ -465,7 +466,7 @@ const makeElement = <S extends Schema.Constraint>(
           >;
         }
         return Effect.flatMap(CurrentDecodeState, (state) =>
-          Effect.andThen(checkOrderedAttributes(element, options, ast, state), () => {
+          Effect.flatMapEager(checkOrderedAttributes(element, options, ast, state), () => {
             const children = canonicalizeOrderedChildren(element.children, state);
             registerOrderedChildren(state, element, children);
             if (children.length === 0 && optional) {
@@ -503,10 +504,13 @@ const makeElement = <S extends Schema.Constraint>(
             ),
           );
         }
-        return Effect.map(validateOrderedChildren([value], content.ast, options), (children) => ({
-          attributes: [],
-          children,
-        }));
+        return Effect.mapEager(
+          validateOrderedChildren([value], content.ast, options),
+          (children) => ({
+            attributes: [],
+            children,
+          }),
+        );
       },
     );
   }

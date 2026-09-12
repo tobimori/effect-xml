@@ -59,6 +59,12 @@ interface FieldSpec {
   readonly optional: boolean;
 }
 
+interface FieldPlan {
+  readonly spec: FieldSpec;
+  readonly placement: FieldPlacement;
+  readonly children: ReadonlyArray<OwnedChildPlacement>;
+}
+
 interface OwnedElementPlacement {
   readonly kind: "element";
   readonly placement: ElementPlacement;
@@ -129,6 +135,18 @@ const resolveFieldChildren = (spec: FieldSpec, resolveSuspended: boolean) => {
   }
 
   return { placements, complete: resolution.complete, error };
+};
+
+const resolveFieldPlan = (spec: FieldSpec, resolveSuspended: boolean): FieldPlan => {
+  const placement = resolvedFieldPlacement(spec, resolveSuspended)!;
+  return {
+    spec,
+    placement,
+    children:
+      placement.kind === "attribute" || placement.kind === "rest"
+        ? []
+        : resolveFieldChildren(spec, resolveSuspended).placements,
+  };
 };
 
 const ownershipKey = (placement: OwnedChildPlacement) => {
@@ -356,6 +374,11 @@ export const Struct = <const Fields extends Readonly<Record<PropertyKey, StructF
         ? [{ spec, kind: placement.kind }]
         : [];
     });
+  const hasDynamicPlacements = specs.some((spec) => !resolveFieldChildren(spec, false).complete);
+  const staticOptionalBareSpecs = hasDynamicPlacements ? undefined : optionalBareSpecs();
+  const staticFieldPlans = hasDynamicPlacements
+    ? undefined
+    : specs.map((spec) => resolveFieldPlan(spec, false));
   const structured = specs.every((spec) => {
     const placement = resolvedFieldPlacement(spec, false);
     if (placement?.kind === "attribute") return true;
@@ -370,7 +393,7 @@ export const Struct = <const Fields extends Readonly<Record<PropertyKey, StructF
       fieldSchema,
       SchemaTransformation.transformEffect({
         decode: (content, options) => {
-          const ambiguous = optionalBareSpecs();
+          const ambiguous = staticOptionalBareSpecs ?? optionalBareSpecs();
           if (ambiguous.length > 0) {
             return failIssues(
               fieldSchema.ast,
@@ -381,12 +404,13 @@ export const Struct = <const Fields extends Readonly<Record<PropertyKey, StructF
               options,
             );
           }
-          const dynamicConflict = ownershipConflict(specs, true);
+          const dynamicConflict = hasDynamicPlacements ? ownershipConflict(specs, true) : undefined;
           if (dynamicConflict !== undefined) {
             return Effect.fail(
               new SchemaIssue.InvalidValue({ message: dynamicConflict }, content, options),
             );
           }
+          const fieldPlans = staticFieldPlans ?? specs.map((spec) => resolveFieldPlan(spec, true));
           return Effect.flatMap(CurrentDecodeState, (state) =>
             Effect.flatMap(CurrentXmlElementDecodeContext, (elementContext) =>
               Effect.flatMap(CurrentStructDecodeIssues, (scope) => {
@@ -394,15 +418,13 @@ export const Struct = <const Fields extends Readonly<Record<PropertyKey, StructF
                   PropertyKey,
                   Attribute | Child | ReadonlyArray<Child> | Rest | undefined
                 > = Object.create(null);
-                const restSpec = specs.find(
-                  (spec) => resolvedFieldPlacement(spec, true)?.kind === "rest",
-                );
+                const restPlan = fieldPlans.find(({ placement }) => placement.kind === "rest");
                 const contentChildren = canonicalizeOrderedChildren(content.children, state);
                 const projected = new Map<PropertyKey, ProjectedNode>();
                 const attributes = new Set<number>();
                 const claimedCanonicalChildren = new Set<number>();
                 const claimedOriginalChildren =
-                  restSpec === undefined ? undefined : new Set<number>();
+                  restPlan === undefined ? undefined : new Set<number>();
                 const preservesSpace = elementContext?.preservesSpace ?? false;
 
                 for (let index = 0; index < content.attributes.length; index++) {
@@ -412,8 +434,11 @@ export const Struct = <const Fields extends Readonly<Record<PropertyKey, StructF
                   }
                 }
 
-                for (const spec of specs) {
-                  const fieldPlacement = resolvedFieldPlacement(spec, true)!;
+                for (const {
+                  children: childPlacements,
+                  placement: fieldPlacement,
+                  spec,
+                } of fieldPlans) {
                   if (fieldPlacement.kind === "rest") continue;
                   if (fieldPlacement.kind === "attribute") {
                     const name = resolveAttributeName(fieldPlacement, spec.key)!;
@@ -448,9 +473,8 @@ export const Struct = <const Fields extends Readonly<Record<PropertyKey, StructF
                     continue;
                   }
 
-                  const resolved = resolveFieldChildren(spec, true);
                   const matchesPlacement = (child: Child) =>
-                    resolved.placements.some((placement) => matchesChild(child, placement));
+                    childPlacements.some((placement) => matchesChild(child, placement));
                   const matches: Array<number> = [];
                   for (let index = 0; index < contentChildren.length; index++) {
                     const child = contentChildren[index];
@@ -483,8 +507,8 @@ export const Struct = <const Fields extends Readonly<Record<PropertyKey, StructF
                     }
                     if (matches.length > 1) {
                       const description =
-                        resolved.placements.length === 1
-                          ? ownershipDescription(resolved.placements[0]!)
+                        childPlacements.length === 1
+                          ? ownershipDescription(childPlacements[0]!)
                           : "XML child content";
                       const issue = duplicateIssue(
                         spec.key,
@@ -498,14 +522,14 @@ export const Struct = <const Fields extends Readonly<Record<PropertyKey, StructF
                   }
                 }
 
-                if (restSpec !== undefined) {
+                if (restPlan !== undefined) {
                   const restAttributes = content.attributes.filter(
                     (_, index) => !attributes.has(index),
                   );
                   const restChildren = content.children.filter(
                     (_, index) => !claimedOriginalChildren!.has(index),
                   );
-                  output[restSpec.key] = {
+                  output[restPlan.spec.key] = {
                     attributes: restAttributes,
                     children: restChildren,
                     namespaces: snapshotRestNamespaces(
@@ -545,7 +569,7 @@ export const Struct = <const Fields extends Readonly<Record<PropertyKey, StructF
           );
         },
         encode: (values, options) => {
-          const ambiguous = optionalBareSpecs();
+          const ambiguous = staticOptionalBareSpecs ?? optionalBareSpecs();
           if (ambiguous.length > 0) {
             return failIssues(
               fieldSchema.ast,
@@ -556,12 +580,13 @@ export const Struct = <const Fields extends Readonly<Record<PropertyKey, StructF
               options,
             );
           }
-          const dynamicConflict = ownershipConflict(specs, true);
+          const dynamicConflict = hasDynamicPlacements ? ownershipConflict(specs, true) : undefined;
           if (dynamicConflict !== undefined) {
             return Effect.fail(
               new SchemaIssue.InvalidValue({ message: dynamicConflict }, values, options),
             );
           }
+          const fieldPlans = staticFieldPlans ?? specs.map((spec) => resolveFieldPlan(spec, true));
           return Effect.flatMap(CurrentEncodeState, (state) => {
             const attributes: Array<{ readonly key: PropertyKey; readonly value: Attribute }> = [];
             const children: Array<Child> = [];
@@ -571,8 +596,7 @@ export const Struct = <const Fields extends Readonly<Record<PropertyKey, StructF
               readonly [Key in keyof Fields]?: Fields[Key]["Encoded"];
             };
 
-            for (const spec of specs) {
-              const fieldPlacement = resolvedFieldPlacement(spec, true)!;
+            for (const { placement: fieldPlacement, spec } of fieldPlans) {
               const value = encodedValues[spec.key as keyof Fields];
               if (value === undefined) {
                 if (!spec.optional) {
@@ -638,9 +662,8 @@ export const Struct = <const Fields extends Readonly<Record<PropertyKey, StructF
 
             if (rest !== undefined) {
               const modeledAttributeNames = new Set(
-                specs.flatMap((spec) => {
-                  const placement = resolvedFieldPlacement(spec, true);
-                  if (placement?.kind !== "attribute") return [];
+                fieldPlans.flatMap(({ placement, spec }) => {
+                  if (placement.kind !== "attribute") return [];
                   const name = resolveAttributeName(placement, spec.key);
                   return name === undefined
                     ? []
@@ -678,12 +701,9 @@ export const Struct = <const Fields extends Readonly<Record<PropertyKey, StructF
                 expandedAttributes.add(expandedName);
               }
 
-              const knownPlacements = specs.flatMap((spec) => {
-                const placement = resolvedFieldPlacement(spec, true);
-                return placement?.kind === "attribute" || placement?.kind === "rest"
-                  ? []
-                  : resolveFieldChildren(spec, true).placements;
-              });
+              const knownPlacements = fieldPlans.flatMap(({ children, placement }) =>
+                placement.kind === "attribute" || placement.kind === "rest" ? [] : children,
+              );
               for (let index = 0; index < rest.value.children.length; index++) {
                 const child = rest.value.children[index]!;
                 if (knownPlacements.some((placement) => matchesChild(child, placement))) {
@@ -711,7 +731,7 @@ export const Struct = <const Fields extends Readonly<Record<PropertyKey, StructF
                 return 0;
               });
             }
-            return Effect.map(
+            return Effect.mapEager(
               validateOrderedChildren(children, fieldSchema.ast, options),
               (validChildren) => {
                 const output = {
