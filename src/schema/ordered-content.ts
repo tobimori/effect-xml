@@ -1,10 +1,12 @@
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import type * as SchemaAST from "effect/SchemaAST";
 import * as SchemaIssue from "effect/SchemaIssue";
+import * as SchemaTransformation from "effect/SchemaTransformation";
 
 import type { Child } from "../ast/element.ts";
 import { CData, isCData, isText, Text } from "../ast/text.ts";
-import type { DecodeState } from "./context.ts";
+import { CurrentDecodeState, type DecodeState } from "./context.ts";
 import { failIssues } from "./issue.ts";
 
 const mergedText = (first: Text, value: string) =>
@@ -51,8 +53,8 @@ export const canonicalizeOrderedChildren = (
 };
 
 /** Rejects typed node boundaries that XML parsing cannot recover after serialization. */
-export const validateOrderedChildren = (
-  children: ReadonlyArray<Child>,
+export const validateOrderedChildren = <Children extends ReadonlyArray<Child>>(
+  children: Children,
   ast: SchemaAST.AST,
   options: SchemaAST.ParseOptions,
 ) => {
@@ -77,3 +79,24 @@ export const validateOrderedChildren = (
     ? Effect.succeed(children)
     : failIssues(ast, issues, children, options);
 };
+
+/** Applies the shared canonicalization and validation boundary for ordered collections. */
+export const orderedCollection = <
+  S extends Schema.Constraint & { readonly Encoded: ReadonlyArray<Child> },
+>(
+  raw: Schema.Codec<S["Encoded"], S["Encoded"]>,
+  target: S,
+): Schema.Codec<S["Type"], S["Encoded"], S["DecodingServices"], S["EncodingServices"]> =>
+  raw.pipe(
+    Schema.decodeTo(
+      target,
+      SchemaTransformation.transformEffect<S["Encoded"], S["Encoded"]>({
+        decode: (children) =>
+          Effect.map(
+            CurrentDecodeState,
+            (state) => canonicalizeOrderedChildren(children, state) as S["Encoded"],
+          ),
+        encode: (children, options) => validateOrderedChildren(children, raw.ast, options),
+      }),
+    ),
+  );

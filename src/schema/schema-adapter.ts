@@ -77,28 +77,6 @@ interface AdapterState {
   readonly pending: Set<SchemaAST.AST>;
 }
 
-const unsupportedUnion = (root: SchemaAST.AST) => {
-  const seen = new Set<SchemaAST.AST>();
-  const work: Array<SchemaAST.AST> = [root];
-  while (work.length > 0) {
-    const ast = work.pop()!;
-    if (seen.has(ast)) continue;
-    seen.add(ast);
-    if (
-      SchemaAST.isUnion(ast) &&
-      ast.types.filter((member) => !SchemaAST.isUndefined(member)).length > 1
-    ) {
-      return "The stack-safe schema adapter does not support ambiguous unions";
-    }
-    work.push(...childAsts(ast));
-  }
-  return undefined;
-};
-
-const unsupportedRun: (message: string) => DeclarationRun =
-  (message) => () => (input, _self, options) =>
-    Effect.fail(new SchemaIssue.InvalidValue({ message }, input, options));
-
 const childAsts = (ast: SchemaAST.AST) => {
   const children: Array<SchemaAST.AST> = [];
   if (ast.encoding !== undefined) {
@@ -188,41 +166,31 @@ const adaptAstWithState = (root: SchemaAST.AST, state: AdapterState): SchemaAST.
         encoding,
         ast.context,
       );
-    } else if (SchemaAST.isArrays(ast)) {
-      const local = new SchemaAST.Arrays(
-        ast.isMutable,
-        ast.elements.map(get),
-        ast.rest.map(get),
-        ast.annotations,
-        ast.checks,
-        undefined,
-        undefined,
-        ast.encodingChecks,
-      );
-      output = new SchemaAST.Declaration(
-        [new SchemaAST.Suspend(() => local)],
-        guardedRun,
-        ast.annotations,
-        undefined,
-        encoding,
-        ast.context,
-        undefined,
-        guardedRun,
-      );
-    } else if (SchemaAST.isObjects(ast)) {
-      const local = new SchemaAST.Objects(
-        ast.propertySignatures.map(
-          (property) => new SchemaAST.PropertySignature(property.name, get(property.type)),
-        ),
-        ast.indexSignatures.map(
-          (index) => new SchemaAST.IndexSignature(get(index.parameter), get(index.type)),
-        ),
-        ast.annotations,
-        ast.checks,
-        undefined,
-        undefined,
-        ast.encodingChecks,
-      );
+    } else if (SchemaAST.isArrays(ast) || SchemaAST.isObjects(ast)) {
+      const local = SchemaAST.isArrays(ast)
+        ? new SchemaAST.Arrays(
+            ast.isMutable,
+            ast.elements.map(get),
+            ast.rest.map(get),
+            ast.annotations,
+            ast.checks,
+            undefined,
+            undefined,
+            ast.encodingChecks,
+          )
+        : new SchemaAST.Objects(
+            ast.propertySignatures.map(
+              (property) => new SchemaAST.PropertySignature(property.name, get(property.type)),
+            ),
+            ast.indexSignatures.map(
+              (index) => new SchemaAST.IndexSignature(get(index.parameter), get(index.type)),
+            ),
+            ast.annotations,
+            ast.checks,
+            undefined,
+            undefined,
+            ast.encodingChecks,
+          );
       output = new SchemaAST.Declaration(
         [new SchemaAST.Suspend(() => local)],
         guardedRun,
@@ -270,37 +238,13 @@ const adaptAstWithState = (root: SchemaAST.AST, state: AdapterState): SchemaAST.
 /**
  * Rebuilds the AST subset accepted by Xml.fromSchema iteratively. Objects and
  * Arrays receive suspended parser boundaries and path-local cycle guards.
- * Eager ambiguous unions are outside that subset and become an execution-time
- * InvalidValue rather than receiving changed candidate-selection semantics.
- * Xml.fromSchema performs the complete lazy-graph inspection before invoking
- * this helper. Ordinary declarations, transformations, checks, defaults,
- * context, and parse options remain owned by Effect for accepted forms.
+ * The caller must first inspect every eager edge and memoized Suspend target
+ * and reject ambiguous unions. Ordinary declarations, transformations, checks,
+ * defaults, context, and parse options remain owned by Effect.
  */
-export const adaptSchema = <S extends Schema.Constraint>(
+export const adaptInspectedSchema = <S extends Schema.Constraint>(
   schema: S,
 ): Schema.Codec<S["Type"], S["Encoded"], S["DecodingServices"], S["EncodingServices"]> => {
-  let unsupported: string | undefined;
-  try {
-    unsupported = unsupportedUnion(schema.ast);
-  } catch (error) {
-    const detail = error instanceof globalThis.Error ? `: ${error.message}` : "";
-    unsupported = `The stack-safe schema adapter could not inspect this schema${detail}`;
-  }
-  if (unsupported !== undefined) {
-    const run = unsupportedRun(unsupported);
-    return Schema.make(
-      new SchemaAST.Declaration(
-        [],
-        run,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        run,
-      ),
-    ) as Schema.Codec<S["Type"], S["Encoded"], S["DecodingServices"], S["EncodingServices"]>;
-  }
   const state: AdapterState = { rebuilt: new Map(), pending: new Set() };
   return Schema.make(adaptAstWithState(schema.ast, state));
 };

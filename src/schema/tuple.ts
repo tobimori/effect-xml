@@ -1,9 +1,6 @@
-import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import * as SchemaTransformation from "effect/SchemaTransformation";
 
 import { isChild } from "../ast/element.ts";
-import { CurrentDecodeState } from "./context.ts";
 import {
   encoded,
   getPlacement,
@@ -11,7 +8,7 @@ import {
   type SingleChildPlacement,
   type TupleItem,
 } from "./metadata.ts";
-import { canonicalizeOrderedChildren, validateOrderedChildren } from "./ordered-content.ts";
+import { orderedCollection } from "./ordered-content.ts";
 import { guardDescent, guardProduct } from "./path-guard.ts";
 
 type TupleItems = ReadonlyArray<TupleItem>;
@@ -48,22 +45,5 @@ export const Tuple = <const Items extends TupleItems>(
       globalThis.Array.isArray(input) && input.every(isChild),
     { kind: "tuple", items: placements },
   );
-  return raw.pipe(
-    Schema.decodeTo(
-      target,
-      SchemaTransformation.transformEffect<
-        Schema.Tuple.Encoded<Items>,
-        Schema.Tuple.Encoded<Items>
-      >({
-        decode: (children) =>
-          Effect.map(CurrentDecodeState, (state) => {
-            return canonicalizeOrderedChildren(children, state) as Schema.Tuple.Encoded<Items>;
-          }),
-        encode: (children, options) =>
-          Effect.mapEager(validateOrderedChildren(children, raw.ast, options), (valid) => {
-            return valid as Schema.Tuple.Encoded<Items>;
-          }),
-      }),
-    ),
-  );
+  return orderedCollection(raw, target);
 };

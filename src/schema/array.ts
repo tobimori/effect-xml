@@ -1,12 +1,9 @@
-import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
-import * as SchemaTransformation from "effect/SchemaTransformation";
 
 import { isChild } from "../ast/element.ts";
-import { CurrentDecodeState } from "./context.ts";
 import { encoded, getPlacement, isSingleChildPlacement, type ArrayItem } from "./metadata.ts";
-import { canonicalizeOrderedChildren, validateOrderedChildren } from "./ordered-content.ts";
+import { orderedCollection } from "./ordered-content.ts";
 import { guardDescent, guardProduct } from "./path-guard.ts";
 
 type ArrayItemInput<S extends ArrayItem> = S["~encoded.optionality"] extends "optional" ? never : S;
@@ -33,17 +30,5 @@ export const Array = <S extends ArrayItem>(
       globalThis.Array.isArray(input) && input.every(isChild),
     { kind: "array", item: placement },
   );
-  return raw.pipe(
-    Schema.decodeTo(
-      guardProduct(Schema.Array(guardDescent(item))),
-      SchemaTransformation.transformEffect<
-        ReadonlyArray<S["Encoded"]>,
-        ReadonlyArray<S["Encoded"]>
-      >({
-        decode: (children) =>
-          Effect.map(CurrentDecodeState, (state) => canonicalizeOrderedChildren(children, state)),
-        encode: (children, options) => validateOrderedChildren(children, raw.ast, options),
-      }),
-    ),
-  );
+  return orderedCollection(raw, guardProduct(Schema.Array(guardDescent(item))));
 };

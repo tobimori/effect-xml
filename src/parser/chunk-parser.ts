@@ -10,7 +10,6 @@ import { Declaration } from "../ast/declaration.ts";
 import { Document, type Misc } from "../ast/document.ts";
 import { Element, type Child } from "../ast/element.ts";
 import { Fragment } from "../ast/fragment.ts";
-import type { SourceSpan } from "../ast/location.ts";
 import { Name } from "../ast/name.ts";
 import { NamespaceDeclaration } from "../ast/namespace-declaration.ts";
 import type { Node } from "../ast/node.ts";
@@ -60,38 +59,12 @@ interface NamespaceChange {
   readonly previous: string | undefined;
 }
 
-interface DeclarationFields {
-  version: XmlVersion;
-  encoding?: string;
-  standalone?: "yes" | "no";
-  span?: SourceSpan;
-}
-
-interface NameFields {
-  localName: string;
-  namespaceUri?: string;
-  prefix?: string;
-  span?: SourceSpan;
-}
-
-interface NamespaceDeclarationFields {
-  prefix?: string;
-  namespaceUri: string;
-  span?: SourceSpan;
-}
-
-interface DocumentFields {
-  declaration?: Declaration;
-  prolog: ReadonlyArray<Misc>;
-  root: Element;
-  epilog: ReadonlyArray<Misc>;
-  span?: SourceSpan;
-}
-
-interface FragmentFields {
-  children: ReadonlyArray<Child>;
-  span?: SourceSpan;
-}
+type Mutable<T> = { -readonly [Key in keyof T]: T[Key] };
+type DeclarationFields = Mutable<ConstructorParameters<typeof Declaration>[0]>;
+type NameFields = Mutable<ConstructorParameters<typeof Name>[0]>;
+type NamespaceDeclarationFields = Mutable<ConstructorParameters<typeof NamespaceDeclaration>[0]>;
+type DocumentFields = Mutable<ConstructorParameters<typeof Document>[0]>;
+type FragmentFields = Mutable<ConstructorParameters<typeof Fragment>[0]>;
 
 type ParseMode = "document" | "fragment";
 
@@ -839,7 +812,6 @@ class Parser {
 
   private parseAttribute() {
     const cursor = this.cursor;
-    const mark = cursor.mark();
     const name = splitQualifiedName(cursor, cursor.readName("an attribute name"));
     cursor.skipWhitespace();
     cursor.expect("=", `Expected = after attribute ${JSON.stringify(name.lexical)}`);
@@ -851,9 +823,9 @@ class Parser {
     cursor.advance();
     const value = this.readDecodedUntil(quote === 0x22 ? '"' : "'", true);
     if (cursor.done)
-      cursor.fail(`Unterminated value for attribute ${JSON.stringify(name.lexical)}`, mark);
+      cursor.fail(`Unterminated value for attribute ${JSON.stringify(name.lexical)}`, name.mark);
     cursor.advance();
-    return { name, value, mark, end: cursor.index };
+    return { name, value, mark: name.mark, end: cursor.index };
   }
 
   private resolveName(qualified: QualifiedName, attribute: boolean) {

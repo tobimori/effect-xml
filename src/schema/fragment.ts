@@ -8,7 +8,12 @@ import * as SchemaTransformation from "effect/SchemaTransformation";
 import { isChild, type Child } from "../ast/element.ts";
 import { Fragment as AstFragment } from "../ast/fragment.ts";
 import { NamespaceContext } from "../namespace/context.ts";
-import { CurrentDecodeState, CurrentEncodeState, withXmlDecodeState } from "./context.ts";
+import {
+  CurrentDecodeState,
+  CurrentEncodeState,
+  withXmlDecodeState,
+  xmlEncodeState,
+} from "./context.ts";
 import { delegateRequired } from "./delegate.ts";
 import { fragmentNodeWithinFragment, type FragmentNodeOptions } from "./fragment-node.ts";
 import {
@@ -146,15 +151,7 @@ export const Fragment = <S extends FragmentContent>(
     (effect, parseOptions) =>
       Effect.suspend(() =>
         Effect.flatMapEager(validateOptions(options, parseOptions), (version) =>
-          Effect.provideService(effect, CurrentEncodeState, {
-            structured: new WeakSet(),
-            typed: new WeakSet(),
-            sortKeys:
-              !Predicate.isObject(options) ||
-              !Predicate.hasProperty(options, "sortKeys") ||
-              options.sortKeys !== false,
-            version,
-          }),
+          Effect.provideService(effect, CurrentEncodeState, xmlEncodeState(options, version)),
         ),
       ),
   );

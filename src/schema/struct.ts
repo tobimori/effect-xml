@@ -173,7 +173,7 @@ const ownershipDescription = (placement: OwnedChildPlacement) => {
 };
 
 const ownershipConflict = (specs: ReadonlyArray<FieldSpec>, resolveSuspended: boolean) => {
-  const ownership = new Map<string, { readonly key: PropertyKey; readonly description: string }>();
+  const ownership = new Map<string, PropertyKey>();
   let restOwner: PropertyKey | undefined;
 
   for (const spec of specs) {
@@ -197,13 +197,10 @@ const ownershipConflict = (specs: ReadonlyArray<FieldSpec>, resolveSuspended: bo
       }
       const key = JSON.stringify(["attribute", name.namespaceUri ?? null, name.localName]);
       const owner = ownership.get(key);
-      if (owner !== undefined && owner.key !== spec.key) {
-        return `Xml.Struct fields ${String(owner.key)} and ${String(spec.key)} both own XML attribute ${JSON.stringify(codecNameLabel(name))}`;
+      if (owner !== undefined && owner !== spec.key) {
+        return `Xml.Struct fields ${String(owner)} and ${String(spec.key)} both own XML attribute ${JSON.stringify(codecNameLabel(name))}`;
       }
-      ownership.set(key, {
-        key: spec.key,
-        description: `XML attribute ${JSON.stringify(codecNameLabel(name))}`,
-      });
+      ownership.set(key, spec.key);
       continue;
     }
 
@@ -212,19 +209,13 @@ const ownershipConflict = (specs: ReadonlyArray<FieldSpec>, resolveSuspended: bo
     if (resolveSuspended && !resolved.complete) {
       return `Xml.Struct field ${String(spec.key)} has unresolved recursive XML child placement`;
     }
-    const own = new Set<string>();
     for (const placement of resolved.placements) {
       const key = ownershipKey(placement);
-      if (own.has(key)) continue;
-      own.add(key);
       const owner = ownership.get(key);
-      if (owner !== undefined && owner.key !== spec.key) {
-        return `Xml.Struct fields ${String(owner.key)} and ${String(spec.key)} both own ${ownershipDescription(placement)}`;
+      if (owner !== undefined && owner !== spec.key) {
+        return `Xml.Struct fields ${String(owner)} and ${String(spec.key)} both own ${ownershipDescription(placement)}`;
       }
-      ownership.set(key, {
-        key: spec.key,
-        description: ownershipDescription(placement),
-      });
+      ownership.set(key, spec.key);
     }
   }
   return undefined;

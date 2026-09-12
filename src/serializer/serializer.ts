@@ -16,9 +16,14 @@ import { CData, isCData, isText, Text } from "../ast/text.ts";
 import { NamespaceContext } from "../namespace/context.ts";
 import { ActiveNamespaces, type NamespaceUndo } from "../namespace/prefix.ts";
 import { validateBinding, xmlNamespace, xmlnsNamespace } from "../namespace/validation.ts";
-import { isNcName, isXml11RestrictedChar, isXmlChar } from "../parser/character.ts";
+import {
+  isNcName,
+  isXml11RestrictedChar,
+  isXmlChar,
+  type XmlVersion,
+} from "../parser/character.ts";
 
-export type XmlVersion = "1.0" | "1.1";
+export type { XmlVersion } from "../parser/character.ts";
 
 /** Options used by the low-level XML serializer. */
 export interface SerializeOptions {

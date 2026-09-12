@@ -12,7 +12,7 @@ import { delegate } from "./delegate.ts";
 import { Document, type DocumentOptions } from "./document.ts";
 import { Element } from "./element.ts";
 import type { StructField } from "./metadata.ts";
-import { adaptSchema } from "./schema-adapter.ts";
+import { adaptInspectedSchema } from "./schema-adapter.ts";
 import { lazy } from "./lazy.ts";
 import { Struct } from "./struct.ts";
 import { suspend } from "./suspend.ts";
@@ -386,7 +386,7 @@ const buildFromSchema = <S extends Schema.Constraint>(
       sortKeys,
     ) as Schema.Codec<S["Encoded"], ElementNode>;
     const adapted = delegate(
-      adaptSchema(schema),
+      adaptInspectedSchema(schema),
       (effect) => effect,
       (effect) => effect,
     );

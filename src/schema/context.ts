@@ -219,6 +219,45 @@ export interface EncodeState {
   encodedRest?: WeakMap<ElementContent, Rest>;
 }
 
+interface XmlEncodeOptions {
+  readonly sortKeys?: boolean;
+}
+
+/** Creates the encode state shared by typed document and fragment boundaries. */
+export const xmlEncodeState = (options: XmlEncodeOptions, version: "1.0" | "1.1"): EncodeState => ({
+  structured: new WeakSet(),
+  typed: new WeakSet(),
+  sortKeys:
+    !Predicate.isObject(options) ||
+    !Predicate.hasProperty(options, "sortKeys") ||
+    options.sortKeys !== false,
+  version,
+});
+
+interface XmlSerializerMetadata {
+  readonly structured: WeakSet<Element>;
+  readonly typed: WeakSet<Element>;
+  rawAttributes?: WeakSet<Attribute>;
+  restNamespaces?: WeakMap<Element, NamespaceContext>;
+}
+
+/** Adds active typed-node metadata only to an internal serializer options copy. */
+export const xmlSerializerOptions = <Options>(
+  options: Options,
+  state: EncodeState | undefined,
+  shareCurrentState: boolean,
+): Options => {
+  if (!shareCurrentState || !Predicate.isObject(options)) return options;
+
+  const metadata: XmlSerializerMetadata = {
+    structured: state?.structured ?? new WeakSet(),
+    typed: state?.typed ?? new WeakSet(),
+  };
+  if (state?.rawAttributes !== undefined) metadata.rawAttributes = state.rawAttributes;
+  if (state?.restNamespaces !== undefined) metadata.restNamespaces = state.restNamespaces;
+  return { ...options, ...metadata };
+};
+
 /** Marks raw Rest attributes without requiring every existing encode-state caller to initialize it. */
 export const registerRawRestAttributes = (
   state: EncodeState | undefined,

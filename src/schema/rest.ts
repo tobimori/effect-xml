@@ -16,7 +16,7 @@ import { isProcessingInstruction } from "../ast/processing-instruction.ts";
 import { isCData, isText } from "../ast/text.ts";
 import { isNamespaceBinding, NamespaceBinding } from "../namespace/binding.ts";
 import { isNamespaceContext, NamespaceContext } from "../namespace/context.ts";
-import { validateBinding, xmlNamespace } from "../namespace/validation.ts";
+import { xmlNamespace } from "../namespace/validation.ts";
 import type { XmlNamespaceScope } from "./context.ts";
 
 const PlacementAnnotation = "effect-xml/placement";
@@ -85,17 +85,10 @@ const effectiveNamespaceIssue = (context: NamespaceContext) => {
   if (first?.prefix !== "xml" || first.namespaceUri !== xmlNamespace) {
     return "An effective Rest namespace snapshot must begin with the implicit xml binding";
   }
-  const prefixes = new Set<string | undefined>();
   for (const binding of context.bindings) {
     if (binding.namespaceUri === "") {
       return "An absent effective namespace binding must be omitted from a Rest snapshot";
     }
-    const bindingIssue = validateBinding(binding.prefix, binding.namespaceUri);
-    if (bindingIssue !== undefined) return bindingIssue;
-    if (prefixes.has(binding.prefix)) {
-      return `Namespace prefix ${JSON.stringify(binding.prefix)} occurs more than once`;
-    }
-    prefixes.add(binding.prefix);
   }
   return undefined;
 };

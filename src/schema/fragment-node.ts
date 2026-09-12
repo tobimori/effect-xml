@@ -1,17 +1,17 @@
 import * as Effect from "effect/Effect";
-import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 
 import { Fragment as AstFragment, FragmentSchema as AstFragmentSchema } from "../ast/fragment.ts";
 import { parseFragment, type FragmentParseOptions } from "../parser/parser.ts";
-import { serializeFragment, type FragmentSerializeOptions } from "../serializer/serializer.ts";
+import { serializeFragment } from "../serializer/serializer.ts";
 import {
   CurrentDecodeState,
   CurrentEncodeState,
   initializeXmlNamespaceScopes,
   withXmlDecodeState,
+  xmlSerializerOptions,
 } from "./context.ts";
 import { delegateRequired } from "./delegate.ts";
 
@@ -42,23 +42,10 @@ const makeFragmentNode = (
           }),
         encode: (fragment) =>
           Effect.flatMap(CurrentEncodeState, (state) => {
-            let serializerOptions: FragmentSerializeOptions = options;
-            if (shareCurrentState && Predicate.isObject(options)) {
-              serializerOptions = {
-                ...options,
-                structured: state?.structured ?? new WeakSet(),
-                typed: state?.typed ?? new WeakSet(),
-              };
-              const rawAttributes = state?.rawAttributes;
-              if (rawAttributes !== undefined) {
-                serializerOptions = { ...serializerOptions, rawAttributes };
-              }
-              const restNamespaces = state?.restNamespaces;
-              if (restNamespaces !== undefined) {
-                serializerOptions = { ...serializerOptions, restNamespaces };
-              }
-            }
-            const serialized = serializeFragment(fragment, serializerOptions);
+            const serialized = serializeFragment(
+              fragment,
+              xmlSerializerOptions(options, state, shareCurrentState),
+            );
             return Result.isFailure(serialized)
               ? Effect.fail(serialized.failure)
               : Effect.succeed(serialized.success);

@@ -1,17 +1,17 @@
 import * as Effect from "effect/Effect";
-import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 
 import { Document as AstDocument, DocumentSchema as AstDocumentSchema } from "../ast/document.ts";
 import { parseDocument, type ParseOptions } from "../parser/parser.ts";
-import { serializeDocument, type SerializeOptions } from "../serializer/serializer.ts";
+import { serializeDocument } from "../serializer/serializer.ts";
 import {
   CurrentDecodeState,
   CurrentEncodeState,
   initializeXmlNamespaceScopes,
   withXmlDecodeState,
+  xmlSerializerOptions,
 } from "./context.ts";
 import { delegateRequired } from "./delegate.ts";
 import { encodedString } from "./metadata.ts";
@@ -20,8 +20,6 @@ export interface DocumentNodeOptions extends ParseOptions {
   readonly pretty?: boolean;
   readonly indent?: string;
 }
-
-export const withDocumentDecodeState = withXmlDecodeState;
 
 const makeDocumentNode = (
   options: DocumentNodeOptions,
@@ -46,23 +44,10 @@ const makeDocumentNode = (
           }),
         encode: (document) =>
           Effect.flatMap(CurrentEncodeState, (state) => {
-            let serializerOptions: SerializeOptions = options;
-            if (shareCurrentState && Predicate.isObject(options)) {
-              serializerOptions = {
-                ...options,
-                structured: state?.structured ?? new WeakSet(),
-                typed: state?.typed ?? new WeakSet(),
-              };
-              const rawAttributes = state?.rawAttributes;
-              if (rawAttributes !== undefined) {
-                serializerOptions = { ...serializerOptions, rawAttributes };
-              }
-              const restNamespaces = state?.restNamespaces;
-              if (restNamespaces !== undefined) {
-                serializerOptions = { ...serializerOptions, restNamespaces };
-              }
-            }
-            const serialized = serializeDocument(document, serializerOptions);
+            const serialized = serializeDocument(
+              document,
+              xmlSerializerOptions(options, state, shareCurrentState),
+            );
             return Result.isFailure(serialized)
               ? Effect.fail(serialized.failure)
               : Effect.succeed(serialized.success);
@@ -73,7 +58,7 @@ const makeDocumentNode = (
 
   return delegateRequired(
     codec,
-    (effect) => withDocumentDecodeState(effect, !shareCurrentState),
+    (effect) => withXmlDecodeState(effect, !shareCurrentState),
     (effect) => effect,
   );
 };

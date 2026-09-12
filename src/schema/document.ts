@@ -7,13 +7,9 @@ import * as SchemaTransformation from "effect/SchemaTransformation";
 import { Declaration } from "../ast/declaration.ts";
 import { Document as AstDocument } from "../ast/document.ts";
 import { isElement } from "../ast/element.ts";
-import { CurrentEncodeState } from "./context.ts";
+import { CurrentEncodeState, withXmlDecodeState, xmlEncodeState } from "./context.ts";
 import { delegateRequired } from "./delegate.ts";
-import {
-  documentNodeWithinDocument,
-  type DocumentNodeOptions,
-  withDocumentDecodeState,
-} from "./document-node.ts";
+import { documentNodeWithinDocument, type DocumentNodeOptions } from "./document-node.ts";
 import type { DocumentRoot } from "./metadata.ts";
 
 export interface DeclarationOptions {
@@ -126,19 +122,15 @@ export const Document = <S extends DocumentRoot>(
 
   return delegateRequired(
     codec,
-    (effect) => withDocumentDecodeState(effect, true),
+    (effect) => withXmlDecodeState(effect, true),
     (effect, parseOptions) =>
       Effect.suspend(() =>
         Effect.flatMapEager(declarationFromOptions(options, parseOptions), () =>
-          Effect.provideService(effect, CurrentEncodeState, {
-            structured: new WeakSet(),
-            typed: new WeakSet(),
-            sortKeys:
-              !Predicate.isObject(options) ||
-              !Predicate.hasProperty(options, "sortKeys") ||
-              options.sortKeys !== false,
-            version: documentVersion(options),
-          }),
+          Effect.provideService(
+            effect,
+            CurrentEncodeState,
+            xmlEncodeState(options, documentVersion(options)),
+          ),
         ),
       ),
   );
