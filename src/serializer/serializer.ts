@@ -146,10 +146,14 @@ const validateAttributeStructure = (attribute: Attribute) => {
   return validateOptionalSpan(attribute, attribute.span, "Attribute");
 };
 
-const validateCommentStructure = (comment: Comment) => {
-  if (!Predicate.isTagged(comment, "Comment")) return invalid("Comment node tag is invalid");
-  if (!Predicate.isString(comment.value)) return invalid("Comment value must be a string");
-  return validateOptionalSpan(comment, comment.span, "Comment");
+const validateValueNodeStructure = (
+  node: Text | CData | Comment,
+  tag: "Text" | "CData" | "Comment",
+  label: string,
+) => {
+  if (!Predicate.isTagged(node, tag)) return invalid(`${label} node tag is invalid`);
+  if (!Predicate.isString(node.value)) return invalid(`${label} value must be a string`);
+  return validateOptionalSpan(node, node.span, label);
 };
 
 const validateProcessingInstructionStructure = (instruction: ProcessingInstruction) => {
@@ -165,20 +169,8 @@ const validateProcessingInstructionStructure = (instruction: ProcessingInstructi
   return validateOptionalSpan(instruction, instruction.span, "Processing instruction");
 };
 
-const validateTextStructure = (text: Text) => {
-  if (!Predicate.isTagged(text, "Text")) return invalid("Text node tag is invalid");
-  if (!Predicate.isString(text.value)) return invalid("Text value must be a string");
-  return validateOptionalSpan(text, text.span, "Text");
-};
-
-const validateCDataStructure = (cdata: CData) => {
-  if (!Predicate.isTagged(cdata, "CData")) return invalid("CDATA node tag is invalid");
-  if (!Predicate.isString(cdata.value)) return invalid("CDATA value must be a string");
-  return validateOptionalSpan(cdata, cdata.span, "CDATA");
-};
-
 const validateMiscStructure = (node: Misc) => {
-  if (node instanceof Comment) return validateCommentStructure(node);
+  if (node instanceof Comment) return validateValueNodeStructure(node, "Comment", "Comment");
   if (node instanceof ProcessingInstruction) return validateProcessingInstructionStructure(node);
   return invalid(
     "Document prolog and epilog entries must be Comment or ProcessingInstruction nodes",
@@ -214,17 +206,17 @@ const validateChildrenStructure = (children: ReadonlyArray<Child>) => {
 
     const node = action.node;
     if (node instanceof Text) {
-      const issue = validateTextStructure(node);
+      const issue = validateValueNodeStructure(node, "Text", "Text");
       if (issue !== undefined) return issue;
       continue;
     }
     if (node instanceof CData) {
-      const issue = validateCDataStructure(node);
+      const issue = validateValueNodeStructure(node, "CData", "CDATA");
       if (issue !== undefined) return issue;
       continue;
     }
     if (node instanceof Comment) {
-      const issue = validateCommentStructure(node);
+      const issue = validateValueNodeStructure(node, "Comment", "Comment");
       if (issue !== undefined) return issue;
       continue;
     }
@@ -419,25 +411,32 @@ const escapeAttribute = (value: string, context: string, version: XmlVersion) =>
 };
 
 const validateLiteral = (value: string, context: string, version: XmlVersion) => {
-  const characterIssue = invalidCharacter(value, context, version);
-  if (characterIssue !== undefined) return characterIssue;
-
+  let literalIssue: SchemaIssue.Issue | undefined;
   let offset = 0;
   for (const character of value) {
     const codePoint = character.codePointAt(0)!;
-    if (version === "1.1" && isXml11RestrictedChar(codePoint)) {
+    if (!isXmlChar(codePoint, version)) {
       return invalid(
-        `${context} contains restricted XML 1.1 character ${codePointLabel(codePoint)} at UTF-16 offset ${offset}, which cannot be represented literally`,
+        `${context} contains an invalid XML ${version} character ${codePointLabel(codePoint)} at UTF-16 offset ${offset}`,
       );
     }
-    if (codePoint === 0x0d || (version === "1.1" && (codePoint === 0x85 || codePoint === 0x2028))) {
-      return invalid(
-        `${context} contains normalization-sensitive literal character ${codePointLabel(codePoint)} at UTF-16 offset ${offset}`,
-      );
+    if (literalIssue === undefined) {
+      if (version === "1.1" && isXml11RestrictedChar(codePoint)) {
+        literalIssue = invalid(
+          `${context} contains restricted XML 1.1 character ${codePointLabel(codePoint)} at UTF-16 offset ${offset}, which cannot be represented literally`,
+        );
+      } else if (
+        codePoint === 0x0d ||
+        (version === "1.1" && (codePoint === 0x85 || codePoint === 0x2028))
+      ) {
+        literalIssue = invalid(
+          `${context} contains normalization-sensitive literal character ${codePointLabel(codePoint)} at UTF-16 offset ${offset}`,
+        );
+      }
     }
     offset += character.length;
   }
-  return undefined;
+  return literalIssue;
 };
 
 const qualifiedName = (name: Name) =>
@@ -507,6 +506,8 @@ const enterNamespaceScope = (
   fixedPrefixes?: ReadonlySet<string | undefined>,
 ) => {
   const declared = new Map<string | undefined, string>();
+  const emitted: Array<NamespaceDeclaration> = [];
+  const undo: Array<NamespaceUndo> = [];
   for (const declaration of declarations) {
     if (declared.has(declaration.prefix)) {
       return failure(
@@ -516,11 +517,7 @@ const enterNamespaceScope = (
     declared.set(declaration.prefix, declaration.namespaceUri);
     const bindingIssue = validateBinding(declaration.prefix, declaration.namespaceUri, version);
     if (bindingIssue !== undefined) return failure(bindingIssue);
-  }
 
-  const emitted: Array<NamespaceDeclaration> = [];
-  const undo: Array<NamespaceUndo> = [];
-  for (const declaration of declarations) {
     const current = bindings.lookup(declaration.prefix);
     const redundant =
       typed &&

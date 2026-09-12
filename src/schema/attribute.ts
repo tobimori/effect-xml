@@ -8,7 +8,6 @@ import { Attribute as AttributeNode, isAttribute } from "../ast/attribute.ts";
 import { Name as AstName } from "../ast/name.ts";
 import { isName, type Name } from "../namespace/name.ts";
 import {
-  astNameFields,
   codecNameFrom,
   codecNameLabel,
   hasExpandedName,
@@ -96,7 +95,7 @@ const makeAttribute = <S extends Schema.Constraint>(
                   validateXmlCharacters(value, "XML attribute value", options),
                   (valid) =>
                     new AttributeNode({
-                      name: new AstName(astNameFields(name)),
+                      name: new AstName(name),
                       value: valid,
                     }),
                 ),

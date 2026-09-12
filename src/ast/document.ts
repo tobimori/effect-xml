@@ -2,16 +2,16 @@ import * as Schema from "effect/Schema";
 
 import { Comment, CommentSchema } from "./comment.ts";
 import { Declaration, DeclarationSchema } from "./declaration.ts";
-import { Element, ElementSchema, type EncodedElement } from "./element.ts";
+import { Element, ElementSchema } from "./element.ts";
 import { SourceSpan } from "./location.ts";
 import { nodeCodec } from "./node-codec.ts";
 import { ProcessingInstruction, ProcessingInstructionSchema } from "./processing-instruction.ts";
 
-/** Content permitted before and after a document root. */
-export type Misc = Comment | ProcessingInstruction;
-
 /** Schema for document prolog and epilog nodes. */
 export const MiscNode = Schema.Union([CommentSchema, ProcessingInstructionSchema]);
+
+/** Content permitted before and after a document root. */
+export type Misc = Schema.Schema.Type<typeof MiscNode>;
 
 const DocumentEncoded = Schema.TaggedStruct("Document", {
   declaration: Schema.optionalKey(DeclarationSchema),
@@ -44,14 +44,7 @@ export class Document {
 /** Codec for validated Document nodes and their plain representation. */
 export const DocumentSchema: Schema.Codec<
   Document,
-  {
-    readonly _tag: "Document";
-    readonly declaration?: Schema.Codec.Encoded<typeof DeclarationSchema>;
-    readonly prolog: ReadonlyArray<Schema.Codec.Encoded<typeof MiscNode>>;
-    readonly root: EncodedElement;
-    readonly epilog: ReadonlyArray<Schema.Codec.Encoded<typeof MiscNode>>;
-    readonly span?: Schema.Codec.Encoded<typeof SourceSpan>;
-  }
+  Schema.Codec.Encoded<typeof DocumentEncoded>
 > = nodeCodec(DocumentEncoded, Document, "effect-xml/XmlNode/Document");
 
 /** Refines a value through class identity as document misc content. */

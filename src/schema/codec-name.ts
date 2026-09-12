@@ -20,12 +20,6 @@ interface MutableCodecName {
   prefix?: string;
 }
 
-interface MutableAstNameFields {
-  localName: string;
-  namespaceUri?: string;
-  prefix?: string;
-}
-
 /** Copies a public name input over optional private namespace defaults. */
 export const codecNameFrom = (
   input: string | Name | undefined,
@@ -48,16 +42,6 @@ export const withLocalName = (name: CodecName, localName: string): ResolvedCodec
 /** Resolves a placement name only when it already carries a local name. */
 export const resolvedCodecName = (name: CodecName) =>
   name.localName === undefined ? undefined : withLocalName(name, name.localName);
-
-/** Copies a resolved codec name into fields accepted by the immutable AST Name class. */
-export const astNameFields = (name: ResolvedCodecName) => {
-  const fields: MutableAstNameFields = {
-    localName: name.localName,
-  };
-  if (name.namespaceUri !== undefined) fields.namespaceUri = name.namespaceUri;
-  if (name.prefix !== undefined) fields.prefix = name.prefix;
-  return fields;
-};
 
 /** Tests expanded-name identity; serialization prefixes are intentionally ignored. */
 export const hasExpandedName = (

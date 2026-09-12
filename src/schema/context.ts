@@ -59,11 +59,8 @@ export interface XmlNamespaceScope {
 export interface DecodeState {
   positions: WeakMap<Node, XmlLocation>;
   readonly projections: WeakMap<Element, ReadonlyMap<PropertyKey, ProjectedNode>>;
-  readonly preservesSpace: WeakMap<Element, boolean>;
   /** False-nil source elements mapped to the views used only for schema projection. */
   projectionAliases?: WeakMap<Element, Element>;
-  /** Element scopes are registered lazily as typed traversal reaches each element. */
-  namespaceScopes?: WeakMap<Element, XmlNamespaceScope>;
   namespaceSnapshots?: WeakMap<XmlNamespaceScope, NamespaceContext>;
   namespaceRoot?: XmlNamespaceScope;
   root?: DecodeRoot;
@@ -75,15 +72,6 @@ export const rootXmlNamespaceScope = (inherited?: NamespaceContext): XmlNamespac
   bindings: inherited?.bindings ?? [],
 });
 
-/** Adds one element declaration delta without materializing inherited bindings. */
-export const enterXmlNamespaceScope = (
-  parent: XmlNamespaceScope,
-  element: Element,
-): XmlNamespaceScope => ({
-  parent,
-  bindings: element.namespaceDeclarations,
-});
-
 /** Sets the inherited root scope without walking any element content. */
 export const initializeXmlNamespaceScopes = (
   state: DecodeState | undefined,
@@ -92,32 +80,10 @@ export const initializeXmlNamespaceScopes = (
   const root = rootXmlNamespaceScope(inherited);
   if (state !== undefined) {
     state.namespaceRoot = root;
-    state.namespaceScopes ??= new WeakMap();
     state.namespaceSnapshots ??= new WeakMap();
   }
   return root;
 };
-
-/** Registers or returns one element's linked scope. The caller supplies its parent scope. */
-export const registerXmlNamespaceScope = (
-  state: DecodeState | undefined,
-  element: Element,
-  parent?: XmlNamespaceScope,
-) => {
-  const cached = state?.namespaceScopes?.get(element);
-  if (cached !== undefined) return cached;
-  const inherited = parent ?? state?.namespaceRoot ?? rootXmlNamespaceScope();
-  const scope = enterXmlNamespaceScope(inherited, element);
-  if (state !== undefined) {
-    state.namespaceScopes ??= new WeakMap();
-    state.namespaceScopes.set(element, scope);
-  }
-  return scope;
-};
-
-/** Returns an element's already registered linked namespace scope. */
-export const xmlNamespaceScopeFor = (state: DecodeState | undefined, element: Element) =>
-  state?.namespaceScopes?.get(element);
 
 export interface XmlElementDecodeContext {
   readonly scope: XmlNamespaceScope;
@@ -135,20 +101,15 @@ export const enterXmlElementDecodeContext = (
   element: Element,
   parent?: XmlElementDecodeContext,
 ): XmlElementDecodeContext => {
-  const scope = enterXmlNamespaceScope(
-    parent?.scope ?? state?.namespaceRoot ?? rootXmlNamespaceScope(),
-    element,
-  );
+  const scope: XmlNamespaceScope = {
+    parent: parent?.scope ?? state?.namespaceRoot ?? rootXmlNamespaceScope(),
+    bindings: element.namespaceDeclarations,
+  };
   const control = element.attributes.find(isXmlSpaceAttribute);
   let preservesSpace = parent?.preservesSpace ?? false;
   if (control?.value === "preserve") preservesSpace = true;
   else if (control?.value === "default") preservesSpace = false;
 
-  if (state !== undefined) {
-    state.namespaceScopes ??= new WeakMap();
-    state.namespaceScopes.set(element, scope);
-    state.preservesSpace.set(element, preservesSpace);
-  }
   return { scope, preservesSpace };
 };
 
@@ -206,9 +167,7 @@ export const withXmlDecodeState = <A, R>(
     const state: DecodeState = {
       positions: new WeakMap(),
       projections: new WeakMap(),
-      preservesSpace: new WeakMap(),
       projectionAliases: new WeakMap(),
-      namespaceScopes: new WeakMap(),
       namespaceSnapshots: new WeakMap(),
       namespaceRoot: rootXmlNamespaceScope(),
     };
@@ -236,34 +195,11 @@ export const registerProjectionAlias = (
 
   const location = state.positions.get(source);
   if (location !== undefined) state.positions.set(projected, location);
-  const preservesSpace = state.preservesSpace.get(source);
-  if (preservesSpace !== undefined) state.preservesSpace.set(projected, preservesSpace);
-  const namespaceScope = state.namespaceScopes?.get(source);
-  if (namespaceScope !== undefined) {
-    state.namespaceScopes ??= new WeakMap();
-    state.namespaceScopes.set(projected, namespaceScope);
-  }
 };
 
 /** Recognizes the namespace-resolved xml:space control attribute. */
 export const isXmlSpaceAttribute = (attribute: Attribute) =>
   attribute.name.localName === "space" && attribute.name.namespaceUri === xmlNamespace;
-
-/** Records an element's inherited xml:space mode for later structured projection. */
-export const registerXmlSpace = (
-  state: DecodeState | undefined,
-  element: Element,
-  inherited = false,
-) => {
-  const cached = state?.preservesSpace.get(element);
-  if (cached !== undefined) return cached;
-  const control = element.attributes.find(isXmlSpaceAttribute);
-  let preserved = inherited;
-  if (control?.value === "preserve") preserved = true;
-  else if (control?.value === "default") preserved = false;
-  state?.preservesSpace.set(element, preserved);
-  return preserved;
-};
 
 export const CurrentDecodeState = Context.Reference<DecodeState | undefined>(
   "effect-xml/schema/CurrentDecodeState",

@@ -57,7 +57,6 @@ interface RawAttribute {
 
 interface NamespaceChange {
   readonly prefix: string;
-  readonly hadPrevious: boolean;
   readonly previous: string | undefined;
 }
 
@@ -884,11 +883,7 @@ class Parser {
     const message = validateBinding(prefix, raw.value, this.cursor.version);
     if (message !== undefined) this.cursor.fail(message, raw.mark);
     const key = prefix ?? "";
-    changes.push({
-      prefix: key,
-      hadPrevious: this.namespaces.has(key),
-      previous: this.namespaces.get(key),
-    });
+    changes.push({ prefix: key, previous: this.namespaces.get(key) });
     if (raw.value.length === 0) this.namespaces.delete(key);
     else this.namespaces.set(key, raw.value);
     const fields: NamespaceDeclarationFields = {
@@ -903,11 +898,8 @@ class Parser {
     for (let index = changes.length - 1; index >= 0; index--) {
       const change = changes[index];
       if (change === undefined) continue;
-      if (change.hadPrevious && change.previous !== undefined) {
-        this.namespaces.set(change.prefix, change.previous);
-      } else {
-        this.namespaces.delete(change.prefix);
-      }
+      if (change.previous === undefined) this.namespaces.delete(change.prefix);
+      else this.namespaces.set(change.prefix, change.previous);
     }
   }
 

@@ -11,20 +11,6 @@ import { NamespaceDeclaration, NamespaceDeclarationSchema } from "./namespace-de
 import { ProcessingInstruction, ProcessingInstructionSchema } from "./processing-instruction.ts";
 import { CData, CDataSchema, Text, TextSchema } from "./text.ts";
 
-/** Any XML AST storage node. */
-export type Node =
-  | Name
-  | Attribute
-  | NamespaceDeclaration
-  | Declaration
-  | Text
-  | CData
-  | Comment
-  | ProcessingInstruction
-  | Element
-  | Fragment
-  | Document;
-
 /** Schema for all XML AST values. */
 export const Node = Schema.Union([
   NameSchema,
@@ -39,6 +25,9 @@ export const Node = Schema.Union([
   FragmentSchema,
   DocumentSchema,
 ]);
+
+/** Any XML AST storage node. */
+export type Node = Schema.Schema.Type<typeof Node>;
 
 /** Refines a value through class identity as an XML AST node. */
 // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Public predicate checks the closed node class union.

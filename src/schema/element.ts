@@ -24,7 +24,6 @@ import {
   type DecodeState,
 } from "./context.ts";
 import {
-  astNameFields,
   codecNameFrom,
   codecNameLabel,
   hasExpandedName,
@@ -151,7 +150,7 @@ const checkOrderedAttributes = (
   return deferElementIssues(ast, issues, element, options);
 };
 
-const decodeSimpleText = (
+const decodeSimpleTextValue = (
   element: ElementNode,
   options: SchemaAST.ParseOptions,
   ast: SchemaAST.AST,
@@ -185,9 +184,7 @@ const decodeSimpleText = (
       issues.push(unexpectedContentIssue(describeChild(child), child, options));
     }
   }
-  return issues.length > 0
-    ? failIssues(ast, issues, element, options)
-    : Effect.succeed(new Text({ value }));
+  return issues.length > 0 ? failIssues(ast, issues, element, options) : Effect.succeed(value);
 };
 
 const registerOrderedChildren = (
@@ -251,7 +248,7 @@ const makeElementCodec = <S extends Schema.Constraint>(
               : Effect.flatMap(encodeContent(value, options), ({ attributes, children }) =>
                   Effect.map(CurrentEncodeState, (state) => {
                     const element = new ElementNode({
-                      name: new AstName(astNameFields(name)),
+                      name: new AstName(name),
                       namespaceDeclarations: [],
                       attributes,
                       children,
@@ -293,7 +290,6 @@ const makeElementCodec = <S extends Schema.Constraint>(
           const activeState: DecodeState = state ?? {
             positions: new WeakMap(),
             projections: new WeakMap(),
-            preservesSpace: new WeakMap(),
             namespaceSnapshots: new WeakMap(),
           };
           const contextual = Effect.flatMap(CurrentXmlElementDecodeContext, (parent) =>
@@ -433,7 +429,10 @@ const makeElement = <S extends Schema.Constraint>(
       content,
       false,
       (element, options, ast) =>
-        decodeSimpleText(element, options, ast) as Effect.Effect<S["Encoded"], SchemaIssue.Issue>,
+        Effect.mapEager(
+          decodeSimpleTextValue(element, options, ast),
+          (value) => new Text({ value }),
+        ) as Effect.Effect<S["Encoded"], SchemaIssue.Issue>,
       (value, options) => {
         if (!isText(value)) {
           return Effect.fail(
@@ -460,10 +459,10 @@ const makeElement = <S extends Schema.Constraint>(
       false,
       (element, options, ast) => {
         if (resolveSuspendedPlacement(placement)?.kind === "text") {
-          return decodeSimpleText(element, options, ast) as Effect.Effect<
-            S["Encoded"],
-            SchemaIssue.Issue
-          >;
+          return Effect.mapEager(
+            decodeSimpleTextValue(element, options, ast),
+            (value) => new Text({ value }),
+          ) as Effect.Effect<S["Encoded"], SchemaIssue.Issue>;
         }
         return Effect.flatMap(CurrentDecodeState, (state) =>
           Effect.flatMapEager(checkOrderedAttributes(element, options, ast, state), () => {
@@ -520,46 +519,10 @@ const makeElement = <S extends Schema.Constraint>(
   }
 
   const text = scalar(content);
-  return makeElementCodec(
-    explicitName,
-    text,
-    false,
-    (element, options, ast) => {
-      let value = "";
-      const issues: Array<SchemaIssue.Issue> = [];
-      if (options.onExcessProperty === "error") {
-        for (const attribute of element.attributes) {
-          if (!isXmlSpaceAttribute(attribute)) {
-            issues.push(
-              unexpectedContentIssue(
-                `XML attribute ${JSON.stringify(attribute.name.qualifiedName)}`,
-                attribute,
-                options,
-              ),
-            );
-          }
-        }
-      }
-      for (const child of element.children) {
-        if (isText(child) || isCData(child)) value += child.value;
-        else if (isElement(child)) {
-          issues.push(
-            new SchemaIssue.InvalidValue(
-              { message: "Expected simple XML character content" },
-              element,
-              options,
-            ),
-          );
-        } else if (options.onExcessProperty === "error") {
-          issues.push(unexpectedContentIssue(describeChild(child), child, options));
-        }
-      }
-      return issues.length > 0 ? failIssues(ast, issues, element, options) : Effect.succeed(value);
-    },
-    (value, options) =>
-      Effect.map(validateXmlCharacters(value, "XML character data", options), (valid) => ({
-        attributes: [],
-        children: valid === "" ? [] : [new Text({ value: valid })],
-      })),
+  return makeElementCodec(explicitName, text, false, decodeSimpleTextValue, (value, options) =>
+    Effect.map(validateXmlCharacters(value, "XML character data", options), (valid) => ({
+      attributes: [],
+      children: valid === "" ? [] : [new Text({ value: valid })],
+    })),
   );
 };

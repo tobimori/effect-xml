@@ -35,10 +35,6 @@ export class ActiveNamespaces {
     return prefix !== undefined && namespaceUri === "" ? undefined : namespaceUri;
   }
 
-  hasPrefix(prefix: Prefix) {
-    return prefix === "xml" || this.#byPrefix.has(prefix);
-  }
-
   *prefixes() {
     for (const [namespaceUri, bindings] of this.#byUri) {
       if (namespaceUri === "") continue;

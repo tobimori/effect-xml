@@ -1,6 +1,6 @@
 import * as Schema from "effect/Schema";
 
-import { ChildNode, type Child, type EncodedChild } from "./element.ts";
+import { ChildNode, type Child } from "./element.ts";
 import { SourceSpan } from "./location.ts";
 import { nodeCodec } from "./node-codec.ts";
 
@@ -26,11 +26,7 @@ export class Fragment {
 /** Codec for validated Fragment nodes and their plain representation. */
 export const FragmentSchema: Schema.Codec<
   Fragment,
-  {
-    readonly _tag: "Fragment";
-    readonly children: ReadonlyArray<EncodedChild>;
-    readonly span?: Schema.Codec.Encoded<typeof SourceSpan>;
-  }
+  Schema.Codec.Encoded<typeof FragmentEncoded>
 > = nodeCodec(FragmentEncoded, Fragment, "effect-xml/XmlNode/Fragment");
 
 /** Refines a value through Fragment class identity. */

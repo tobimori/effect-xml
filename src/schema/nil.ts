@@ -19,7 +19,6 @@ import {
   resolvePlacementName,
 } from "./context.ts";
 import {
-  astNameFields,
   codecNameLabel,
   hasExpandedName,
   resolvedCodecName,
@@ -211,7 +210,7 @@ export const Nil = <S extends Encodes<ElementNode>>(
             }
             return Effect.map(CurrentEncodeState, (state) => {
               const output = new ElementNode({
-                name: new AstName(astNameFields(name)),
+                name: new AstName(name),
                 namespaceDeclarations: [],
                 attributes: [
                   new Attribute({
